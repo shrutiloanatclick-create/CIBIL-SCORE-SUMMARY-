@@ -3,9 +3,7 @@ import { UploadCloud, FileText, Loader2, ShieldCheck } from 'lucide-react'
 import axios from 'axios'
 
 const getBackendUrl = () => {
-    const hostname = window.location.hostname;
-    const port = '8000';
-    return `http://${hostname}:${port}`;
+    return import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`;
 };
 
 const API_URL = `${getBackendUrl()}/api/upload`;

@@ -39,7 +39,8 @@ export default function AIChat({ extractedText }) {
         setIsLoading(true)
 
         try {
-            const response = await axios.post('http://127.0.0.1:8000/api/chat', {
+            const baseUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+            const response = await axios.post(`${baseUrl}/api/chat`, {
                 extracted_text: extractedText,
                 question: input
             })
