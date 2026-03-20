@@ -1,0 +1,34 @@
+{
+  "summary": {
+    "name": "Deepak Rastogi",
+    "dob": "",
+    "date_reported": "",
+    "mobile": "",
+    "company": "",
+    "address": "",
+    "cibil_score": 750,
+    "active_loans": 5,
+    "closed_loans": 0,
+    "total_loans": 5,
+    "outstanding_amount": "628671",
+    "enquiries_30d": 0,
+    "enquiries_90d": 0,
+    "total_enquiries": 0
+  },
+  "active_loan_details": [],
+  "closed_loan_details": [],
+  "enquiry_list": [],
+  "loan_history": {
+    "personal_loans": [],
+    "credit_cards": [],
+    "home_loans": [],
+    "gold_loans": [],
+    "overdrafts": []
+  },
+  "payment_history": [],
+  "risk_level": "Low Risk",
+  "risk_reasons": [
+    "Excellent payment discipline: No DPD/Overdue observed in recent records"
+  ],
+  "delinquency_details": []
+}

@@ -1,0 +1,160 @@
+import streamlit as st
+import pdfplumber
+import os
+import json
+from groq import Groq
+from dotenv import load_dotenv
+import pandas as pd
+
+load_dotenv()
+
+from backend.services.pdf_service import extract_text_from_pdf
+from backend.services.llm_service import summarize_cibil_report, get_risk_level
+
+# Initialize Groq client
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# Page config
+st.set_page_config(page_title="CIBIL Report Analyzer", layout="wide", page_icon="🛡️")
+
+# Custom CSS for glassmorphism look
+st.markdown("""
+    <style>
+    .main {
+        background-color: #0f172a;
+        color: #f8fafc;
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        height: 3.5em;
+        background-color: #3b82f6;
+        color: white;
+        font-weight: bold;
+        transition: 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #2563eb;
+        border-color: #3b82f6;
+    }
+    .stMetric {
+        background: rgba(30, 41, 59, 0.7);
+        padding: 20px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    }
+    div[data-testid="stExpander"] {
+        background: rgba(30, 41, 59, 0.4);
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Session State Initialization
+if 'step' not in st.session_state:
+    st.session_state.step = 1
+if 'report_data' not in st.session_state:
+    st.session_state.report_data = None
+if 'analyzed' not in st.session_state:
+    st.session_state.analyzed = False
+
+# UI Header
+st.title("🛡️ CIBIL Report PDF Analyzer")
+st.markdown("---")
+
+# File Upload Section
+if not st.session_state.analyzed:
+    uploaded_file = st.file_uploader("Upload CIBIL Report (PDF)", type="pdf")
+    if uploaded_file is not None:
+        if st.button("🚀 Analyze Report"):
+            with st.spinner("Extracting and analyzing credit data..."):
+                text = extract_text(uploaded_file)
+                data = analyze_report(text)
+                if data:
+                    st.session_state.report_data = data
+                    st.session_state.analyzed = True
+                    st.session_state.step = 1
+                    st.rerun()
+else:
+    # Sidebar for Reset
+    with st.sidebar:
+        if st.button("🔄 Upload New Report"):
+            st.session_state.analyzed = False
+            st.session_state.report_data = None
+            st.session_state.step = 1
+            st.rerun()
+
+    # Progressive Tabs Navigation
+    tabs_to_show = ["📄 Credit Summary"]
+    if st.session_state.step >= 2:
+        tabs_to_show.append("🏦 Active Loan Details")
+    if st.session_state.step >= 3:
+        tabs_to_show.append("📅 Payment History")
+    
+    tabs = st.tabs(tabs_to_show)
+    data = st.session_state.report_data
+
+    # Step 1: Credit Summary
+    with tabs[0]:
+        s = data['summary']
+        st.header("Step 1 — Credit Summary")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("CIBIL Score", s['cibil_score'])
+        with col2:
+            risk = get_risk_level(s['cibil_score'])
+            st.metric("Risk Category", risk)
+        with col3:
+            st.metric("Total Active Loans", s['active_loans'])
+            
+        col4, col5, col6 = st.columns(3)
+        with col4:
+            st.metric("Total Closed Loans", s['closed_loans'])
+        with col5:
+            st.metric("Outstanding Amount", s['outstanding_amount'])
+        with col6:
+            st.metric("Recent Enquiries", s['recent_enquiries'])
+
+        if st.session_state.step == 1:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("➡ View Active Loans"):
+                st.session_state.step = 2
+                st.rerun()
+
+    # Step 2: Active Loan Details
+    if st.session_state.step >= 2:
+        with tabs[1]:
+            loans = data.get('active_loan_details', [])
+            st.header("Step 2 — Active Loan Details")
+            st.write(f"**Total Number of Active Loans:** {len(loans)}")
+            
+            if loans:
+                df = pd.DataFrame(loans)
+                df.columns = ["Lender Name", "Loan Type", "Loan Amount", "Outstanding Balance", "EMI", "Start Date", "Status"]
+                st.dataframe(df, use_container_width=True)
+            else:
+                st.info("No active loans found in the report.")
+
+            if st.session_state.step == 2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("➡ Next: Payment History"):
+                    st.session_state.step = 3
+                    st.rerun()
+
+    # Step 3: Payment History
+    if st.session_state.step >= 3:
+        with tabs[2]:
+            history = data.get('payment_history', [])
+            st.header("Step 3 — Payment History")
+            
+            if history:
+                df_hist = pd.DataFrame(history)
+                df_hist.columns = ["Month", "Missed EMIs", "Late Payments", "DPD", "Defaults", "Settled Accounts"]
+                st.dataframe(df_hist, use_container_width=True)
+            else:
+                st.info("No payment history details found.")
+            
+            st.success("Analysis Complete! All sections have been reviewed.")
