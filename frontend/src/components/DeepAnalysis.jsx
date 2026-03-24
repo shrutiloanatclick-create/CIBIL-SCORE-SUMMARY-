@@ -221,7 +221,7 @@ export default function DeepAnalysis({ data }) {
 
     // ── computed insights ──
     const totalOutstanding = useMemo(() =>
-        activeLoans.reduce((sum, l) => sum + parseINR(l.outstanding_balance || l.loan_amount), 0)
+        activeLoans.reduce((sum, l) => sum + parseINR(l.outstanding_balance), 0)
         , [activeLoans]);
 
     const totalOriginal = useMemo(() =>
@@ -362,7 +362,7 @@ export default function DeepAnalysis({ data }) {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '1rem' }}>
                     <StatBox label="Active Loans" value={activeLoans.length} icon={CreditCard} color="#818cf8" accent />
                     <StatBox label="Closed Loans" value={closedLoans.length} icon={CheckCircle} color="#10b981" accent />
-                    <StatBox label="Outstanding" value={formatINR(summary.outstanding_amount || totalOutstanding)} icon={DollarSign} color="#f59e0b" accent />
+                    <StatBox label="Outstanding" value={formatINR(totalOutstanding || summary.outstanding_amount)} icon={DollarSign} color="#f59e0b" accent />
                     <StatBox label="Monthly EMI" value={monthlyEMI > 0 ? formatINR(monthlyEMI) : 'N/A'} icon={Calendar} color="#60a5fa" accent />
                     <StatBox label="Enquiries (30D)" value={enquiries30} icon={Activity} color={enquiries30 > 2 ? '#f87171' : '#10b981'} accent />
                     <StatBox label="On-Time Rate" value={`${onTimeRate}%`} icon={Target} color={onTimeRate >= 90 ? '#10b981' : '#f59e0b'} accent />
