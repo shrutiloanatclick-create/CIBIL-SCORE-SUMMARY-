@@ -60,6 +60,18 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
         return counts;
     }, [data?.active_loan_details]);
 
+    // Compute total outstanding by summing active_loan_details — the single source of truth
+    // This ensures the card and the breakdown detail always show the same number.
+    const computedTotalOutstanding = useMemo(() => {
+        const loans = data?.active_loan_details || [];
+        if (!Array.isArray(loans) || loans.length === 0) return null;
+        const total = loans.reduce((sum, loan) => {
+            const v = parseInt(String(loan.outstanding_balance || '0').replace(/[^0-9]/g, '')) || 0;
+            return sum + v;
+        }, 0);
+        return total > 0 ? '₹' + total.toLocaleString('en-IN') : null;
+    }, [data?.active_loan_details]);
+
     const parseDateHelper = (dStr) => {
         if (!dStr || typeof dStr !== 'string') return null;
         const parts = dStr.split('-');
@@ -219,7 +231,7 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                     </div>
                     <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Active Exposure</div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-                        <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{summary.outstanding_amount || '₹0'}</span>
+                        <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{computedTotalOutstanding || summary.outstanding_amount || '₹0'}</span>
                         <span style={{ color: 'var(--text-dim)', fontWeight: '600', fontSize: '0.9rem' }}>Across {summary.active_loans} accounts</span>
                     </div>
                 </div>
@@ -357,7 +369,7 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                             Outstanding Breakdown
                         </h3>
                         <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem', margin: 0 }}>
-                            Total: <span style={{ color: 'var(--text-main)', fontWeight: '800' }}>{summary.outstanding_amount}</span>
+                            Total: <span style={{ color: 'var(--text-main)', fontWeight: '800' }}>{computedTotalOutstanding || summary.outstanding_amount}</span>
                         </p>
                     </div>
 
