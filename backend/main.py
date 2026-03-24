@@ -15,10 +15,15 @@ load_dotenv()
 
 app = FastAPI(title="CIBIL Report Summarizer")
 
-# Configure CORS for frontend access
+# In production, set ALLOWED_ORIGINS to your Vercel frontend URL, e.g.:
+# ALLOWED_ORIGINS=https://your-app.vercel.app
+# Multiple origins can be comma-separated.
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
+allowed_origins = ["*"] if _raw_origins == "*" else [o.strip() for o in _raw_origins.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins for MVP
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: cibil-summary-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false          # Set this manually in the Render dashboard
+      - key: ALLOWED_ORIGINS
+        sync: false          # Set to your Vercel frontend URL, e.g. https://your-app.vercel.app

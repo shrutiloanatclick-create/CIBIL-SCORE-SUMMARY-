@@ -32,12 +32,12 @@ start cmd /k "title Backend Server && cd /d %~dp0backend && call venv\Scripts\ac
 echo Waiting for backend to initialize...
 timeout /t 5 /nobreak >nul
 
-echo Installing frontend requirements (Root)...
-cd ..
+echo Installing frontend requirements...
+cd ..\frontend
 call npm install
 
 echo Starting Frontend Server (React/Vite) in a new window...
-start cmd /k "title Frontend Server && cd /d %~dp0 && npm run dev"
+start cmd /k "title Frontend Server && cd /d %~dp0frontend && npm run dev"
 
 echo ==========================================
 echo Servers are starting up!

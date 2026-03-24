@@ -10,8 +10,9 @@ debug_last_extraction.txt
 
 # Node
 node_modules/
-dist/
-dist-ssr/
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
 *.local
 
 # IDEs
@@ -23,3 +24,6 @@ dist-ssr/
 # OS
 .DS_Store
 Thumbs.db
+
+# Temp
+tmp/
