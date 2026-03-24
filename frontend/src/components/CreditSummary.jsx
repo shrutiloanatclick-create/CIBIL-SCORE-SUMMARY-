@@ -74,14 +74,23 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
 
     const parseDateHelper = (dStr) => {
         if (!dStr || typeof dStr !== 'string') return null;
-        const parts = dStr.split('-');
-        if (parts.length < 3) return null;
-        return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        const parts = dStr.trim().split('-');
+        if (parts.length === 3) {
+            // DD-MM-YYYY
+            return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        }
+        if (parts.length === 2) {
+            // MM-YYYY — treat as 1st of that month
+            return new Date(parseInt(parts[1]), parseInt(parts[0]) - 1, 1);
+        }
+        return null;
     };
+
+    const dateReported = summary.date_reported || data?.date_reported || '';
 
     const enquiryCounts = useMemo(() => {
         const list = data?.enquiry_list || [];
-        const reportDate = parseDateHelper(getDateReported()) || new Date();
+        const reportDate = parseDateHelper(dateReported) || new Date();
 
         const thirtyDaysAgo = new Date(reportDate);
         thirtyDaysAgo.setDate(reportDate.getDate() - 30);
@@ -101,13 +110,17 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
             });
         }
 
+        // Prefer computed values from enquiry_list over LLM-extracted summary fields
+        // (same pattern as outstanding_amount fix — computed data is more reliable)
+        const llm30 = summary.enquiries_30d !== undefined ? parseInt(summary.enquiries_30d) : null;
+        const llm90 = summary.enquiries_90d !== undefined ? parseInt(summary.enquiries_90d) : null;
         return {
-            thirty: summary.enquiries_30d !== undefined ? parseInt(summary.enquiries_30d) : c30,
-            ninety: summary.enquiries_90d !== undefined ? parseInt(summary.enquiries_90d) : c90,
+            thirty: (c30 > 0) ? c30 : (llm30 !== null ? llm30 : 0),
+            ninety: (c90 > 0) ? c90 : (llm90 !== null ? llm90 : 0),
             actualCount30: c30,
             actualCount90: c90
         };
-    }, [data?.enquiry_list, summary.enquiries_30d, summary.enquiries_90d, getDateReported()]);
+    }, [data?.enquiry_list, summary.enquiries_30d, summary.enquiries_90d, dateReported]);
 
     const sortedEnquiries = useMemo(() => {
         const list = data?.enquiry_list || [];
@@ -125,7 +138,7 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
     const filteredEnquiries = useMemo(() => {
         if (!activeEnquiryView) return sortedEnquiries;
 
-        const reportDate = parseDateHelper(getDateReported()) || new Date();
+        const reportDate = parseDateHelper(dateReported) || new Date();
         const days = parseInt(activeEnquiryView);
         const cutoff = new Date(reportDate);
         cutoff.setDate(reportDate.getDate() - days);
@@ -134,7 +147,7 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
             const d = parseDateHelper(enq.date);
             return d && d >= cutoff && d <= reportDate;
         });
-    }, [sortedEnquiries, activeEnquiryView, getDateReported()]);
+    }, [sortedEnquiries, activeEnquiryView, dateReported]);
 
     const closedLoans = data?.closed_loan_details || [];
 

@@ -17,10 +17,16 @@ const formatINR = (val) => {
 
 const parseDateHelper = (dStr) => {
     if (!dStr || typeof dStr !== 'string') return null;
-    const parts = dStr.split('-');
-    if (parts.length < 3) return null;
-    // Handle DD-MM-YYYY
-    return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+    const parts = dStr.trim().split('-');
+    if (parts.length === 3) {
+        // DD-MM-YYYY
+        return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+    }
+    if (parts.length === 2) {
+        // MM-YYYY — treat as 1st of that month
+        return new Date(parseInt(parts[1]), parseInt(parts[0]) - 1, 1);
+    }
+    return null;
 };
 
 const parseINR = (val) => {
@@ -253,13 +259,16 @@ export default function DeepAnalysis({ data }) {
         const thirtyDaysAgo = new Date(reportDate);
         thirtyDaysAgo.setDate(reportDate.getDate() - 30);
         
-        if (!Array.isArray(enquiries)) return 0;
+        if (!Array.isArray(enquiries)) return parseInt(summary.enquiries_30d) || 0;
         
-        return enquiries.filter(e => {
+        const computed = enquiries.filter(e => {
             const d = parseDateHelper(e?.date);
             return d && d >= thirtyDaysAgo && d <= reportDate;
         }).length;
-    }, [enquiries, summary.date_reported]);
+
+        // Prefer computed count; fall back to LLM value if nothing matched
+        return computed > 0 ? computed : (parseInt(summary.enquiries_30d) || 0);
+    }, [enquiries, summary.date_reported, summary.enquiries_30d]);
 
     const lenderGroups = useMemo(() => {
         const map = {};
