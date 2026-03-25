@@ -252,7 +252,11 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                     </div>
                 </div>
 
-                <div className="metric-card" style={{ cursor: 'pointer', transition: 'transform 0.2s' }} onClick={() => toggleView(setShowBreakdown, showBreakdown)}>
+                <div className="metric-card" style={{ cursor: 'pointer', transition: 'transform 0.2s' }} onClick={() => {
+                    const newState = !showBreakdown;
+                    setShowBreakdown(newState);
+                    setShowClosedBreakdown(newState);
+                }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.25rem' }}>
                         <div style={{ padding: '0.85rem', background: 'rgba(167, 139, 250, 0.1)', borderRadius: '1rem', border: '1px solid rgba(167, 139, 250, 0.2)' }}>
                             <Landmark size={24} color="#a78bfa" />
