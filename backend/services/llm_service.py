@@ -138,13 +138,13 @@ def summarize_cibil_report(text: str) -> dict:
     We ask the model to output exactly JSON so we can parse it reliably.
     """
     
-    # Calibrated truncation: llama-3.1-8b-instant on free tier has a 6,000 TPM limit.
-    # We use 8k chars (~2k tokens) to stay safely within the limit when combined with prompt and output tokens.
-    max_chars = 8000
+    # Expanded limit: llama-3.1-8b-instant has 128k context. 
+    # 50k chars is ~12k tokens, well within limits and covers 99% of reports.
+    max_chars = 50000
     if len(text) > max_chars:
-        # Keep 5k chars from head (Personal + Summary + active loans)
-        # Keep 3k chars from tail (Enquiries usually at the very end)
-        text = text[:5000] + "\n... [TRUNCATED FOR TOKEN LIMIT] ...\n" + text[-3000:]
+        # Keep 30k chars from head (Personal + Summary + active loans)
+        # Keep 20k chars from tail (Enquiries + Closed loans usually near end)
+        text = text[:30000] + "\n... [TRUNCATED FOR TOKEN LIMIT] ...\n" + text[-20000:]
 
     prompt = f"""
     SYSTEM: Financial data extractor for Indian CIBIL reports. Extract data with zero hallucination. Numeric fields must be pure numbers.
@@ -343,13 +343,15 @@ def summarize_cibil_report(text: str) -> dict:
                         break
 
         # Trust actual list lengths as source of truth for counts
+        active_list = data.get("active_loan_details", [])
+        if not isinstance(active_list, list): active_list = []
         summary["active_loans"] = len(active_list)
         
         closed_list = data.get("closed_loan_details", [])
         if not isinstance(closed_list, list): closed_list = []
         summary["closed_loans"] = len(closed_list)
             
-        summary["total_loans"] = summary["active_loans"] + summary["closed_loans"]
+        summary["total_loans"] = (summary.get("active_loans") or 0) + (summary.get("closed_loans") or 0)
 
         # Ensure all required keys exist to prevent frontend errors
         if "loan_history" not in data:
@@ -394,8 +396,8 @@ def summarize_cibil_report_vision(pdf_bytes: bytes) -> dict:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         images_content = []
-        # Process up to the first 4 pages (where summary details usually are)
-        for i in range(min(4, len(doc))):
+        # Process up to the first 8 pages (CIBIL summaries often span 3-6 pages)
+        for i in range(min(8, len(doc))):
             page = doc[i]
             # Render page to an image
             pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
@@ -415,19 +417,17 @@ def summarize_cibil_report_vision(pdf_bytes: bytes) -> dict:
         
         Extract:
         1. CIBIL Score (integer)
-        2. Customer City (string)
-        3. Total Active Loan Accounts (integer)
-        4. Loan Types (list of strings)
-        5. Total Outstanding Amount (string)
-        6. Overdue Accounts (integer)
-        7. Payment History Issues (string)
-        8. Recent Credit Enquiries (integer)
-        9. Closed Accounts (integer)
-        10. Date Reported (string)
-        11. State (string)
+        2. Customer/Contact Details (name, dob, mobile, city, state, address)
+        3. Total Active & Closed Loan Counts
+        4. ACTIVE LOAN DETAILS: List every open account with lender_name, loan_type, loan_amount, outstanding_balance, overdue_amount, loan_start_date.
+        5. ENQUIRY LIST: List recent enquiries with lender, date, and amount.
         
-        Return ONLY a valid JSON object exactly like this with no markdown wrapping:
-        {"cibil_score": 750, "city": "Mumbai", "state": "Maharashtra", "active_loans": 2, "loan_types": ["Personal"], "outstanding_amount": "₹50k", "overdue_accounts": 0, "payment_issues": "None", "recent_enquiries": 1, "closed_accounts": 1, "date_reported": "11-05-2023"}
+        Return ONLY a valid JSON object exactly like this:
+        {
+          "summary": { "cibil_score": 750, "name": "", "city": "", "state": "", "active_loans": 2, "closed_loans": 1, "outstanding_amount": "₹50k" },
+          "active_loan_details": [{"lender_name": "", "loan_type": "", "loan_amount": "", "outstanding_balance": "", "overdue_amount": "", "loan_start_date": ""}],
+          "enquiry_list": [{"lender": "", "date": "", "amount": ""}]
+        }
         """
         
         content_list = [{"type": "text", "text": prompt_text}] + images_content
@@ -439,7 +439,7 @@ def summarize_cibil_report_vision(pdf_bytes: bytes) -> dict:
             ],
             response_format={"type": "json_object"},
             temperature=0.1,
-            max_tokens=1024,
+            max_tokens=2048,
         )
         
         result_content = response.choices[0].message.content.strip()
@@ -461,48 +461,60 @@ def summarize_cibil_report_vision(pdf_bytes: bytes) -> dict:
         if not isinstance(data, dict):
             data = {"summary": {}, "error": "Vision model failed to return a valid dictionary"}
 
-        # Normalize structure for frontend consistency
-        summary = data.get("summary")
-        if not isinstance(summary, dict):
-            summary = {}
-            
-        data = {
+        # --- NORMALIZATION ---
+        summary_raw = data.get("summary")
+        summary = summary_raw if isinstance(summary_raw, dict) else {}
+        
+        # Helper to get field from either summary sub-dict or root
+        def get_f(key, default=None):
+            val = summary.get(key)
+            if val is None and isinstance(data, dict):
+                val = data.get(key)
+            return val if val is not None else default
+
+        active_extracted = data.get("active_loan_details", [])
+        if not isinstance(active_extracted, list): active_extracted = []
+        
+        enq_extracted = data.get("enquiry_list", [])
+        if not isinstance(enq_extracted, list): enq_extracted = []
+
+        normalized_data = {
             "summary": {
-                "cibil_score": safe_int(summary.get("cibil_score"), 0) if "cibil_score" in summary else data.get("cibil_score", 0),
-                "active_loans": safe_int(summary.get("active_loans"), 0) if "active_loans" in summary else data.get("active_loans", 0),
-                "closed_loans": safe_int(summary.get("closed_loans"), 0) if "closed_loans" in summary else data.get("closed_loans", 0),
-                "outstanding_amount": summary.get("outstanding_amount") or data.get("outstanding_amount", "₹0"),
-                "total_enquiries": safe_int(summary.get("total_enquiries"), 0) if "total_enquiries" in summary else data.get("recent_enquiries", 0),
-                "date_reported": summary.get("date_reported") or data.get("date_reported", "Not Available"),
+                "cibil_score": safe_int(get_f("cibil_score"), 0),
+                "active_loans": len(active_extracted) or safe_int(get_f("active_loans"), 0),
+                "closed_loans": safe_int(get_f("closed_loans"), 0),
+                "outstanding_amount": get_f("outstanding_amount", "₹0"),
+                "total_enquiries": len(enq_extracted) or safe_int(get_f("total_enquiries") or get_f("recent_enquiries"), 0),
+                "date_reported": get_f("date_reported", "Not Available"),
                 "enquiries_30d": 0,
                 "enquiries_90d": 0,
-                "name": summary.get("name") or "Scanned Report",
-                "dob": summary.get("dob") or "See Image",
-                "mobile": summary.get("mobile") or "See Image",
-                "city": summary.get("city") or data.get("city", "Not Available"),
-                "state": summary.get("state") or data.get("state", "Not Available"),
-                "company": summary.get("company") or "Not Available",
-                "address": summary.get("address") or "See Image"
+                "name": get_f("name", "Scanned Report"),
+                "dob": get_f("dob", "See Image"),
+                "mobile": get_f("mobile", "See Image"),
+                "city": get_f("city", "Not Available"),
+                "state": get_f("state", "Not Available"),
+                "company": get_f("company", "Not Available"),
+                "address": get_f("address", "See Image")
             },
-                "active_loan_details": [],
-                "enquiry_list": [],
-                "loan_history": {
-                    "personal_loans": [],
-                    "credit_cards": [],
-                    "home_loans": [],
-                    "gold_loans": [],
-                    "overdrafts": []
-                },
-                "payment_history": []
-            }
+            "active_loan_details": active_extracted,
+            "enquiry_list": enq_extracted,
+            "loan_history": {
+                "personal_loans": [],
+                "credit_cards": [],
+                "home_loans": [],
+                "gold_loans": [],
+                "overdrafts": []
+            },
+            "payment_history": []
+        }
         
         # Add deterministic Risk Level and Reasons
-        risk_level, risk_reasons, delinquency_details = calculate_deterministic_risk(data)
-        data["risk_level"] = risk_level
-        data["risk_reasons"] = risk_reasons
-        data["delinquency_details"] = delinquency_details
+        risk_level, risk_reasons, delinquency_details = calculate_deterministic_risk(normalized_data)
+        normalized_data["risk_level"] = risk_level
+        normalized_data["risk_reasons"] = risk_reasons
+        normalized_data["delinquency_details"] = delinquency_details
              
-        return data
+        return normalized_data
 
     except json.JSONDecodeError as je:
         print(f"JSON Parsing Error (Vision): {je} - Output was: {result_content}")
