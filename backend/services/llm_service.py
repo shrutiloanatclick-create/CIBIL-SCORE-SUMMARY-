@@ -36,6 +36,41 @@ def safe_int(val, default=0):
     except (ValueError, TypeError):
         return default
 
+def parse_date(date_str):
+    """Helper to parse various Indian date formats (DD-MM-YYYY, DD/MM/YYYY, DD MMM YYYY)."""
+    if not date_str or not isinstance(date_str, str): return None
+    import datetime
+    try:
+        # Normalize separators
+        clean = date_str.replace('/', '-').replace(' ', '-')
+        # Try DD-MM-YYYY
+        parts = clean.split('-')
+        if len(parts) == 3:
+            d, m, y = parts[0], parts[1], parts[2]
+            if len(y) == 2: y = "20" + y # Fix 23 -> 2023
+            return datetime.datetime(int(y), int(m), int(d))
+    except:
+        pass
+    return None
+
+def calculate_enquiry_counts(enq_list, report_date_str):
+    """Calculates 30d and 90d enquiry buckets based on the report date."""
+    import datetime
+    count_30 = 0
+    count_90 = 0
+    
+    report_date = parse_date(report_date_str) or datetime.datetime.now()
+    
+    for enq in enq_list:
+        if not isinstance(enq, dict): continue
+        dt = parse_date(enq.get("date"))
+        if dt:
+            delta = (report_date - dt).days
+            if delta <= 30: count_30 += 1
+            if delta <= 90: count_90 += 1
+            
+    return count_30, count_90
+
 def calculate_deterministic_risk(data: dict) -> tuple:
     """
     Calculates risk level and specific reasons based on strict business rules.
@@ -342,6 +377,16 @@ def summarize_cibil_report(text: str) -> dict:
                         summary["address"] = addr_val
                         break
 
+        # --- 2. ENQUIRY BUCKETING & COUNT RECONCILIATION ---
+        enq_list = data.get("enquiry_list", [])
+        if not isinstance(enq_list, list): enq_list = []
+        
+        # Determine buckets deterministically
+        c30, c90 = calculate_enquiry_counts(enq_list, summary.get("date_reported"))
+        summary["enquiries_30d"] = c30
+        summary["enquiries_90d"] = c90
+        summary["total_enquiries"] = len(enq_list)
+
         # Trust actual list lengths as source of truth for counts
         active_list = data.get("active_loan_details", [])
         if not isinstance(active_list, list): active_list = []
@@ -352,6 +397,12 @@ def summarize_cibil_report(text: str) -> dict:
         summary["closed_loans"] = len(closed_list)
             
         summary["total_loans"] = (summary.get("active_loans") or 0) + (summary.get("closed_loans") or 0)
+        
+        # --- 3. RISK ASSESSMENT (Now uses corrected counts/buckets) ---
+        risk_level, risk_reasons, delinquency_details = calculate_deterministic_risk(data)
+        data["risk_level"] = risk_level
+        data["risk_reasons"] = risk_reasons
+        data["delinquency_details"] = delinquency_details
 
         # Ensure all required keys exist to prevent frontend errors
         if "loan_history" not in data:
@@ -362,21 +413,6 @@ def summarize_cibil_report(text: str) -> dict:
         
         log_to_file(f"Extraction complete for: {summary.get('name')}. Active Count: {summary.get('active_loans')}")
 
-        # Add deterministic Risk Level and Reasons
-        risk_level, risk_reasons, delinquency_details = calculate_deterministic_risk(data)
-        data["risk_level"] = risk_level
-        data["risk_reasons"] = risk_reasons
-        data["delinquency_details"] = delinquency_details
-
-        # --- ENQUIRY CONSISTENCY CHECK ---
-        # If the summary has counts but list is empty, the frontend might show a mismatch.
-        # We try to derive the total_enquiries if it's 0 but list has items.
-        enq_list = data.get("enquiry_list", [])
-        if not isinstance(enq_list, list): enq_list = []
-        
-        # Ensure total_enquiries always matches the actual list length
-        summary["total_enquiries"] = len(enq_list)
-        # ---------------------------------
              
         return data
 
@@ -486,8 +522,8 @@ def summarize_cibil_report_vision(pdf_bytes: bytes) -> dict:
                 "outstanding_amount": get_f("outstanding_amount", "₹0"),
                 "total_enquiries": len(enq_extracted) or safe_int(get_f("total_enquiries") or get_f("recent_enquiries"), 0),
                 "date_reported": get_f("date_reported", "Not Available"),
-                "enquiries_30d": 0,
-                "enquiries_90d": 0,
+                "enquiries_30d": calculate_enquiry_counts(enq_extracted, get_f("date_reported"))[0],
+                "enquiries_90d": calculate_enquiry_counts(enq_extracted, get_f("date_reported"))[1],
                 "name": get_f("name", "Scanned Report"),
                 "dob": get_f("dob", "See Image"),
                 "mobile": get_f("mobile", "See Image"),

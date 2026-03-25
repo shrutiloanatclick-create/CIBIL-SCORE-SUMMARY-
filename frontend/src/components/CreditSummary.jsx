@@ -248,7 +248,6 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                     <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Active Exposure</div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
                         <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{computedTotalOutstanding || summary.outstanding_amount || '₹0'}</span>
-                        <span style={{ color: 'var(--text-dim)', fontWeight: '600', fontSize: '0.9rem' }}>Across {activeLoanDetails.length} accounts</span>
                     </div>
                 </div>
 
