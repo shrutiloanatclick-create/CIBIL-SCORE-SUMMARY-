@@ -6,6 +6,9 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
     console.log("DEBUG: CreditSummary mounting with data:", data);
     const [selectedLoan, setSelectedLoan] = useState(null);
     const summary = data?.summary || {};
+    const activeLoanDetails = data?.active_loan_details || [];
+    const closedLoanDetails = data?.closed_loan_details || [];
+    const enquiryList = data?.enquiry_list || [];
     const [activeCategory, setActiveCategory] = useState(null);
     const [showBreakdown, setShowBreakdown] = useState(false);
     const [showClosedBreakdown, setShowClosedBreakdown] = useState(false);
@@ -245,7 +248,7 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                     <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Active Exposure</div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
                         <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{computedTotalOutstanding || summary.outstanding_amount || '₹0'}</span>
-                        <span style={{ color: 'var(--text-dim)', fontWeight: '600', fontSize: '0.9rem' }}>Across {summary.active_loans} accounts</span>
+                        <span style={{ color: 'var(--text-dim)', fontWeight: '600', fontSize: '0.9rem' }}>Across {activeLoanDetails.length} accounts</span>
                     </div>
                 </div>
 
@@ -258,7 +261,7 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                     </div>
                     <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Account Portfolio</div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-                        <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{summary.total_loans || '0'}</span>
+                        <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{activeLoanDetails.length + closedLoanDetails.length}</span>
                         <span style={{ color: 'var(--text-dim)', fontWeight: '600', fontSize: '0.9rem' }}>Total accounts</span>
                     </div>
                 </div>
@@ -283,14 +286,19 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                         </div>
                     </div>
                     <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1rem' }}>Total Enquiries</div>
-                    <div style={{ display: 'flex', gap: '1.5rem' }}>
+                    <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-end' }}>
+                        <div>
+                            <div style={{ fontSize: '2.1rem', fontWeight: '900', color: 'var(--text-main)', lineHeight: '1' }}>{enquiryList.length > 0 ? enquiryList.length : (summary.total_enquiries || 0)}</div>
+                            <div style={{ fontSize: '0.65rem', fontWeight: '800', color: 'var(--text-dim)', textTransform: 'uppercase', marginTop: '0.3rem' }}>Lifetime</div>
+                        </div>
+                        <div style={{ width: '1px', height: '30px', background: 'var(--border-color)', margin: '0 0.2rem 0.2rem' }} />
                         <div style={{ cursor: 'pointer' }} onClick={() => setActiveEnquiryView('30')}>
-                            <div style={{ fontSize: '1.8rem', fontWeight: '900', color: '#f87171' }}>{enquiryCounts.thirty}</div>
-                            <div style={{ fontSize: '0.7rem', fontWeight: '800', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Last 30 Days</div>
+                            <div style={{ fontSize: '1.4rem', fontWeight: '900', color: '#f87171', lineHeight: '1' }}>{enquiryCounts.thirty}</div>
+                            <div style={{ fontSize: '0.65rem', fontWeight: '800', color: 'var(--text-dim)', textTransform: 'uppercase', marginTop: '0.3rem' }}>30 Days</div>
                         </div>
                         <div style={{ cursor: 'pointer' }} onClick={() => setActiveEnquiryView('90')}>
-                            <div style={{ fontSize: '1.8rem', fontWeight: '900', color: '#fbbf24' }}>{enquiryCounts.ninety}</div>
-                            <div style={{ fontSize: '0.7rem', fontWeight: '800', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Last 90 Days</div>
+                            <div style={{ fontSize: '1.4rem', fontWeight: '900', color: '#fbbf24', lineHeight: '1' }}>{enquiryCounts.ninety}</div>
+                            <div style={{ fontSize: '0.65rem', fontWeight: '800', color: 'var(--text-dim)', textTransform: 'uppercase', marginTop: '0.3rem' }}>90 Days</div>
                         </div>
                     </div>
                 </div>
@@ -304,7 +312,7 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                     </div>
                     <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Closed Accounts</div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-                        <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{summary.closed_loans || '0'}</span>
+                        <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{closedLoanDetails.length}</span>
                         <span style={{ color: 'var(--text-dim)', fontWeight: '600', fontSize: '0.9rem' }}>Historical depth</span>
                     </div>
                 </div>

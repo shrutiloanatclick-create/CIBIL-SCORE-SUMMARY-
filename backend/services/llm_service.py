@@ -162,7 +162,6 @@ def summarize_cibil_report(text: str) -> dict:
        - COMPANY: "Employer/Occupation". Null if not found.
 
     2. SCORE: 3-digit number (300-900). Labels: "CIBIL/Experian Score". Return as integer.
-
     3. ACTIVE LOANS (active_loan_details): Extract every active account.
        - lender_name: Bank/NBFC name.
        - loan_type: Normalize to (Personal Loan, Credit Card, Home Loan, Gold Loan, Auto Loan, Consumer Loan, Business Loan).
@@ -174,7 +173,11 @@ def summarize_cibil_report(text: str) -> dict:
        - overdue_amount: Amount Overdue. "₹0" if none.
        - payment_history: Array of records with: month_year (MM/YY), status (STD/0/DPD), dpd (int).
 
-    4. REQUIRED JSON STRUCTURE:
+    4. CLOSED LOANS (closed_loan_details): Extract every closed/settled account.
+       - Use same structure as active loans.
+       - Add field: "date_closed": "DD-MM-YYYY" or "MM-YYYY".
+
+    5. REQUIRED JSON STRUCTURE:
     {{
         "summary": {{ 
             "name": "", "dob": "", "date_reported": "", "mobile": "", "city": "", "state": "", "company": null, "address": "",
@@ -182,7 +185,7 @@ def summarize_cibil_report(text: str) -> dict:
             "outstanding_amount": "₹0 (sum of active)", "enquiries_30d": 0, "enquiries_90d": 0, "total_enquiries": 0 
         }},
         "active_loan_details": [{{ ...above fields... }}],
-        "closed_loan_details": [{{ ...similar to active, plus "date_closed": "DD-MM-YYYY" }}],
+        "closed_loan_details": [{{ ...above fields... }}],
         "enquiry_list": [{{ "lender": "", "date": "", "purpose": "", "amount": "" }}],
         "loan_history": {{ "personal_loans": [], "credit_cards": [], "home_loans": [], "gold_loans": [], "overdrafts": [] }},
         "payment_history": [{{ "lender": "", "month_year": "", "status": "" }}]
@@ -206,7 +209,7 @@ def summarize_cibil_report(text: str) -> dict:
             ],
             response_format={"type": "json_object"},
             temperature=0.1,
-            max_tokens=1500, # Reduced to save TPM
+            max_tokens=3000, # Increased to capture all accounts and enquiries
             timeout=60, # 1 minute timeout for Groq
         )
         
@@ -339,22 +342,14 @@ def summarize_cibil_report(text: str) -> dict:
                         summary["address"] = addr_val
                         break
 
-        # --- CONSISTENCY CHECKS ---
-        active_list = data.get("active_loan_details", [])
-        if not isinstance(active_list, list): active_list = []
+        # Trust actual list lengths as source of truth for counts
+        summary["active_loans"] = len(active_list)
         
-        # If summary says 0 but we have a list, trust the list
-        if summary.get("active_loans", 0) == 0 and len(active_list) > 0:
-            summary["active_loans"] = len(active_list)
-        
-        # Calculate closed loans and total portfolio size
         closed_list = data.get("closed_loan_details", [])
         if not isinstance(closed_list, list): closed_list = []
-        
-        if summary.get("closed_loans", 0) == 0 and len(closed_list) > 0:
-            summary["closed_loans"] = len(closed_list)
+        summary["closed_loans"] = len(closed_list)
             
-        summary["total_loans"] = safe_int(summary.get("active_loans", 0)) + safe_int(summary.get("closed_loans", 0))
+        summary["total_loans"] = summary["active_loans"] + summary["closed_loans"]
 
         # Ensure all required keys exist to prevent frontend errors
         if "loan_history" not in data:
@@ -377,9 +372,8 @@ def summarize_cibil_report(text: str) -> dict:
         enq_list = data.get("enquiry_list", [])
         if not isinstance(enq_list, list): enq_list = []
         
-        if len(enq_list) > 0:
-            if summary.get("total_enquiries", 0) == 0:
-                summary["total_enquiries"] = len(enq_list)
+        # Ensure total_enquiries always matches the actual list length
+        summary["total_enquiries"] = len(enq_list)
         # ---------------------------------
              
         return data
