@@ -202,22 +202,30 @@ def calculate_deterministic_risk(data: dict) -> tuple:
 def extract_loans_from_chunk(chunk_text: str) -> dict:
     """Helper to extract active and closed loans from a specific text chunk."""
     prompt = f"""
-    SYSTEM: Extract ONLY 'active_loan_details' and 'closed_loan_details' from this fragment of a credit report.
-    Format your response as a JSON object with these two keys. 
-    If a loan is partially cut off at the start or end, ignore it.
+    SYSTEM: Financial data extractor for CIBIL/EXPERIAN reports. 
+    Extract EVERY loan/account found in the text fragment below. 
     
-    TEXT FRAGMENT:
-    {chunk_text}
+    EXPERIAN COLUMN MAPPING RULES:
+    - lender_name: Usually the first column or labeled "Lender/Member Name".
+    - loan_amount: This is the "Sanctioned Amount" or "High Credit".
+    - outstanding_balance: This is the "Current Balance" or "Net Balance". 
+    - emi: "Monthly Payment" or "Installment Amt".
+    - loan_start_date: "Date Opened".
+    - overdue_amount: "Amount Overdue". Use 0 if not found.
+    - account_no: Full string if available.
     
-    OUTPUT SCHEMA:
-    {{
+    OUTPUT: A JSON object with "active_loan_details" and "closed_loan_details" arrays.
+    SCHEMA: {{
       "active_loan_details": [
-        {{ "lender_name": "", "account_no": "", "loan_type": "", "sanctioned_amount": 0, "current_balance": 0, "overdue_amount": 0, "has_late_payments": false }}
+        {{ "lender_name": "", "account_no": "", "loan_type": "", "loan_amount": "", "outstanding_balance": "", "overdue_amount": "", "emi": "", "loan_start_date": "", "payment_history": "" }}
       ],
       "closed_loan_details": [
-        {{ "lender_name": "", "account_no": "", "loan_type": "", "sanctioned_amount": 0, "closed_date": "" }}
+        {{ "lender_name": "", "account_no": "", "loan_type": "", "loan_amount": "", "loan_start_date": "", "date_closed": "" }}
       ]
     }}
+    
+    TEXT FRAGMENT:
+    \"\"\"{chunk_text}\"\"\"
     """
     try:
         response = client.chat.completions.create(
@@ -257,31 +265,43 @@ def summarize_cibil_report(text: str) -> dict:
         account_block_end = enquiry_idx if enquiry_idx > account_idx else len(text)
         account_block = text[account_idx:account_block_end]
         
-        # Process in 120k chunks with 20k overlap to avoid cutting loans in half
-        chunk_size = 120000
-        overlap = 20000
+        # Process in 130k chunks with 40k overlap to avoid cutting loans in half
+        chunk_size = 130000
+        overlap = 40000
         
         for start in range(0, len(account_block), chunk_size - overlap):
             chunk = account_block[start:start + chunk_size]
             log_to_file(f"Processing account chunk: {start} to {start + len(chunk)}")
             result = extract_loans_from_chunk(chunk)
             
-            # Simple deduplication during merge
+            # Refined deduplication: include more fields to allow sibling loans with same amounts
             def get_loan_id(loan):
-                return f"{loan.get('lender_name', '')}-{loan.get('account_no', '')}-{loan.get('sanctioned_amount', 0)}"
+                if not isinstance(loan, dict): return "invalid"
+                lid = f"{str(loan.get('lender_name', '')).strip().upper()}-"
+                lid += f"{str(loan.get('account_no', '')).strip().upper()}-"
+                lid += f"{safe_int(loan.get('loan_amount', 0))}-"
+                lid += f"{safe_int(loan.get('outstanding_balance', 0))}-"
+                lid += f"{str(loan.get('loan_start_date', '')).strip()}"
+                return lid
             
             existing_ids = {get_loan_id(l) for l in all_active_loans}
             for l in result.get("active_loan_details", []):
-                if get_loan_id(l) not in existing_ids:
+                new_id = get_loan_id(l)
+                # If we have a very specific ID (with account_no), use it.
+                # If account_no is missing, we still deduplicate by date/balance to be safe-ish but less aggressive.
+                if new_id not in existing_ids:
                     all_active_loans.append(l)
+                    existing_ids.add(new_id)
             
             existing_closed_ids = {get_loan_id(l) for l in all_closed_loans}
             for l in result.get("closed_loan_details", []):
-                if get_loan_id(l) not in existing_closed_ids:
+                new_id = get_loan_id(l)
+                if new_id not in existing_closed_ids:
                     all_closed_loans.append(l)
+                    existing_closed_ids.add(new_id)
                     
-            if len(all_active_loans) + len(all_closed_loans) > 300:
-                log_to_file("Safety cap: Reached 300 loans, stopping chunked extraction.")
+            if len(all_active_loans) + len(all_closed_loans) > 500: # Increased cap for massive reports
+                log_to_file("Safety cap: Reached 500 loans, stopping chunked extraction.")
                 break
 
     # 2. Main Prompt for Summary Data (Using first 100k + tail 50k)
@@ -401,7 +421,12 @@ def summarize_cibil_report(text: str) -> dict:
         # --- MERGE CHUNKED LOANS ---
         def get_loan_id(loan):
             if not isinstance(loan, dict): return "invalid"
-            return f"{str(loan.get('lender_name', '')).strip().upper()}-{str(loan.get('account_no', '')).strip().upper()}-{safe_int(loan.get('sanctioned_amount', 0))}"
+            lid = f"{str(loan.get('lender_name', '')).strip().upper()}-"
+            lid += f"{str(loan.get('account_no', '')).strip().upper()}-"
+            lid += f"{safe_int(loan.get('loan_amount', 0))}-"
+            lid += f"{safe_int(loan.get('outstanding_balance', 0))}-"
+            lid += f"{str(loan.get('loan_start_date', '')).strip()}"
+            return lid
 
         existing_active_ids = {get_loan_id(l) for l in all_active_loans}
         main_active = data.get("active_loan_details", [])
@@ -581,15 +606,8 @@ def summarize_cibil_report(text: str) -> dict:
         
         current_summary_val = safe_int(summary.get("outstanding_amount"))
         if total_balance > 0:
-            # Prefer the summary-table value if it's already significantly set
-            # Otherwise, use the calculated sum if it's larger (suggesting list is more complete)
-            if current_summary_val == 0 or total_balance > current_summary_val:
-                if total_balance >= 100000:
-                    summary["outstanding_amount"] = f"₹{total_balance / 100000:.2f}L"
-                elif total_balance >= 1000:
-                    summary["outstanding_amount"] = f"₹{total_balance / 1000:.1f}k"
-                else:
-                    summary["outstanding_amount"] = f"₹{total_balance}"
+            # We MUST match the itemized sum exactly to avoid visual mismatches on the dashboard
+            summary["outstanding_amount"] = f"₹{total_balance:,}"
         
         # --- 3. RISK ASSESSMENT ---
         risk_level, risk_reasons, delinquency_details = calculate_deterministic_risk(data)
