@@ -18,16 +18,21 @@ def log_to_file(msg):
         log_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "backend_audit.log")
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"[{os.getpid()}] {msg}\n")
-    except:
-        pass
+    except Exception as e:
+        # Print to stderr if log writing fails so it shows up in terminal logs
+        import sys
+        print(f"DEBUG: log_to_file failed: {e}", file=sys.stderr)
 
 def safe_int(val, default=0):
     """Safely convert a value to an integer, handling None, empty strings, and formatted numbers."""
     if val is None:
         return default
+    s_val = str(val).strip().upper()
+    if s_val in ["NIL", "NA", "ZERO", "NONE", "", "*"]:
+        return 0
     try:
         # Remove commas, currency symbols, and spaces
-        s_val = str(val).replace(',', '').replace('₹', '').strip()
+        s_val = s_val.replace(',', '').replace('₹', '').replace('RS', '').strip()
         # Extract the first sequence of digits
         match = re.search(r'(\d+)', s_val)
         if match:
@@ -81,9 +86,10 @@ def calculate_enquiry_counts(enq_list, report_date_str):
         if not isinstance(enq, dict): continue
         dt = parse_date(enq.get("date"))
         if dt:
+            # Calculate days difference, ensuring we don't count future dates as "recent" unless they are near
             delta = (report_date - dt).days
-            if delta <= 30: count_30 += 1
-            if delta <= 90: count_90 += 1
+            if 0 <= delta <= 30: count_30 += 1
+            if 0 <= delta <= 90: count_90 += 1
             
     return count_30, count_90
 
@@ -422,6 +428,22 @@ def summarize_cibil_report(text: str) -> dict:
         summary["closed_loans"] = len(closed_list)
             
         summary["total_loans"] = (summary.get("active_loans") or 0) + (summary.get("closed_loans") or 0)
+        
+        # --- NEW: DETERMINISTIC OUTSTANDING BALANCE SUMMATION ---
+        total_balance = 0
+        for loan in active_list:
+            if isinstance(loan, dict):
+                bal = safe_int(loan.get("outstanding_balance") or loan.get("current_balance"))
+                total_balance += bal
+        
+        # Format as Indian Currency for display
+        if total_balance >= 100000:
+            summary["outstanding_amount"] = f"₹{total_balance / 100000:.2f}L"
+        elif total_balance >= 1000:
+            summary["outstanding_amount"] = f"₹{total_balance / 1000:.1f}k"
+        else:
+            summary["outstanding_amount"] = f"₹{total_balance}"
+        # --- End Summation ---
         
         # --- 3. RISK ASSESSMENT (Now uses corrected counts/buckets) ---
         risk_level, risk_reasons, delinquency_details = calculate_deterministic_risk(data)

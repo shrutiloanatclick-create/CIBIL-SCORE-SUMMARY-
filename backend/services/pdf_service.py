@@ -5,11 +5,11 @@ import re
 import os
 
 def clean_text(text: str) -> str:
-    """Preprocess extracted text: keep structure by not collapsing all spaces."""
+    """Preprocess extracted text: keep structure by preserving leading indentation."""
     # Replace tabs with multiple spaces
     text = text.replace('\t', '    ')
-    # Remove leading/trailing whitespace on each line
-    lines = [line.strip() for line in text.split('\n')]
+    # Remove only trailing whitespace from each line to preserve table structure
+    lines = [line.rstrip() for line in text.split('\n')]
     return '\n'.join(lines)
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
