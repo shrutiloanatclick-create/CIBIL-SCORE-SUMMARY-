@@ -195,17 +195,31 @@ def summarize_cibil_report(text: str) -> dict:
     We ask the model to output exactly JSON so we can parse it reliably.
     """
     
-    # Expanded limit: llama-3.1-8b-instant has 128k context. 
-    # 50k chars is ~12k tokens, well within limits and covers 99% of reports.
-    max_chars = 60000
+    max_chars = 400000
     if len(text) > max_chars:
-        # CIBIL reports: 
-        # - Head contains Personal Info + Summary + First few accounts
-        # - Middle contains most Accounts
-        # - Tail contains Enquiries + Closed accounts
-        # We increase the overlap or take more from the middle if possible.
-        # But for now, let's just increase the total limit and take larger head/tail.
-        text = text[:40000] + "\n... [TRUNCATED FOR TOKEN LIMIT] ...\n" + text[-20000:]
+        # Section-Aware Truncation for massive reports
+        # We need: 1. Personal Info (Head), 2. Account Information (Middle/Bulk), 3. Enquiries (Tail)
+        
+        # 1. Find markers
+        account_idx = text.upper().find("ACCOUNT INFORMATION")
+        enquiry_idx = text.upper().find("ENQUIRY INFORMATION")
+        
+        if account_idx != -1 and enquiry_idx != -1 and enquiry_idx > account_idx:
+            # We have both markers. 
+            # Keep 50k from head
+            # Keep 250k from Account Info onwards
+            # Keep 100k from Enquiry Info onwards
+            head = text[:50000]
+            mid = text[account_idx:account_idx + 250000]
+            tail = text[enquiry_idx:]
+            # Ensure tail doesn't overlap or if it's too long, truncate it
+            if len(tail) > 100000:
+                tail = tail[:100000]
+            
+            text = head + "\n... [TRUNCATED BETWEEN HEAD AND ACCOUNTS] ...\n" + mid + "\n... [TRUNCATED BETWEEN ACCOUNTS AND ENQUIRIES] ...\n" + tail
+        else:
+            # Fallback to smart head/tail if markers not clear
+            text = text[:300000] + "\n... [TRUNCATED] ...\n" + text[-100000:]
 
     prompt = f"""
     SYSTEM: Financial data extractor for Indian CIBIL reports. Extract data with zero hallucination. Numeric fields must be pure numbers.
@@ -273,8 +287,8 @@ def summarize_cibil_report(text: str) -> dict:
             ],
             response_format={"type": "json_object"},
             temperature=0.1,
-            max_tokens=4000, # Increased to capture all accounts and enquiries
-            timeout=90, # Increased for 70b model
+            max_tokens=8000, # Further increased for massive reports (100+ loans)
+            timeout=180, # Increased for huge input and 70b model
         )
         
         result_content = response.choices[0].message.content.strip()
