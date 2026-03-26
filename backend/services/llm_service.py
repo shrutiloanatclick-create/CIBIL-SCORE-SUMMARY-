@@ -205,14 +205,20 @@ def extract_loans_from_chunk(chunk_text: str) -> dict:
     SYSTEM: Financial data extractor for CIBIL/EXPERIAN reports. 
     Extract EVERY loan/account found in the text fragment below. 
     
-    EXPERIAN COLUMN MAPPING RULES:
-    - lender_name: Usually the first column or labeled "Lender/Member Name".
-    - loan_amount: This is the "Sanctioned Amount" or "High Credit".
-    - outstanding_balance: This is the "Current Balance" or "Net Balance". 
-    - emi: "Monthly Payment" or "Installment Amt".
-    - loan_start_date: "Date Opened".
-    - overdue_amount: "Amount Overdue". Use 0 if not found.
     - account_no: Full string if available.
+    
+    EXPERIAN COLUMN IDENTIFICATION:
+    - "Sanctioned Amount" or "High Credit" -> 'loan_amount'
+    - "Current Balance" or "Net Balance" -> 'outstanding_balance' (THIS IS THE PRIMARY OBLIGATION)
+    - "Monthly Payment" or "Installment Amt" -> 'emi'
+    - "Amount Overdue" -> 'overdue_amount'
+    - "Date Opened" -> 'loan_start_date'
+    - "Account Number" -> 'account_no'
+    
+    CRITICAL RULES:
+    1. Extract EVERY SINGLE LOAN. Do not summarize or skip similar records.
+    2. BALANCE GUARD: Always use 'Current Balance' for 'outstanding_balance'. NEVER use 'Sanctioned Amount' for outstanding balance.
+    3. DATA FIDELITY: Preserve the full Lender Name and Account Number string. 
     
     OUTPUT: A JSON object with "active_loan_details" and "closed_loan_details" arrays.
     SCHEMA: {{
@@ -233,7 +239,7 @@ def extract_loans_from_chunk(chunk_text: str) -> dict:
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.1,
-            max_tokens=4000
+            max_tokens=8000 # Increased to ensure no truncation of large lists
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
@@ -247,27 +253,37 @@ def summarize_cibil_report(text: str) -> dict:
     """
     original_text = text # Keep for regex fallbacks
     
-    # 1. Identify sections
-    acc_match = re.search(r"(ACCOUNT INFORMATION|ACCOUNT SUMMARY|ACCOUNTS|TRADE LINES|ACCOUNT DETAILS|CREDIT SUMMARY)", text, re.I)
-    enq_match = re.search(r"(ENQUIRY INFORMATION|ENQUIRIES|ENQUIRY DETAILS|ENQUIRY SUMMARY)", text, re.I)
+    # 1. Identify Account section start
+    # Try custom markers from pdf_service first
+    custom_start = text.find("[[ACCOUNT_SECTION_START]]")
+    custom_end = text.find("[[ACCOUNT_SECTION_END]]")
     
-    account_idx = acc_match.start() if acc_match else -1
-    enquiry_idx = enq_match.start() if enq_match else -1
+    if custom_start != -1 and custom_end != -1:
+        account_idx = custom_start + len("[[ACCOUNT_SECTION_START]]")
+        enquiry_idx = custom_end
+        log_to_file(f"Found custom markers: Account start at {account_idx}, End at {enquiry_idx}")
+    else:
+        # Fallback to regex
+        account_idx_match = re.search(r"(ACCOUNT INFORMATION|ACCOUNT SUMMARY|ACCOUNTS|TRADE LINES|ACCOUNT DETAILS|CREDIT SUMMARY|TRADELINE)", text, re.I)
+        account_idx = account_idx_match.start() if account_idx_match else -1
+        
+        enquiry_idx_match = re.search(r"(ENQUIRY INFORMATION|ENQUIRIES|CREDIT ENQUIRIES|ENQUIRY DETAILS)", text, re.I)
+        enquiry_idx = enquiry_idx_match.start() if enquiry_idx_match else -1
     
     all_active_loans = []
     all_closed_loans = []
     
     # If the report is large, chunk the account section
-    if len(text) > 150000 and account_idx != -1:
-        log_to_file(f"Large report detected ({len(text)} chars). Starting chunked extraction.")
+    if (len(text) > 80000 or custom_start != -1) and account_idx != -1:
+        log_to_file(f"Large or Marked report detected. Starting ultra-granular extraction.")
         
-        # Define the account info block (from account_idx to enquiry_idx or end)
-        account_block_end = enquiry_idx if enquiry_idx > account_idx else len(text)
+        # Define the account info block
+        account_block_end = enquiry_idx if (enquiry_idx > account_idx) else len(text)
         account_block = text[account_idx:account_block_end]
         
-        # Process in 130k chunks with 40k overlap to avoid cutting loans in half
-        chunk_size = 130000
-        overlap = 40000
+        # Process in smaller 60k chunks with 25k overlap
+        chunk_size = 60000
+        overlap = 25000
         
         for start in range(0, len(account_block), chunk_size - overlap):
             chunk = account_block[start:start + chunk_size]
@@ -510,7 +526,7 @@ def summarize_cibil_report(text: str) -> dict:
             for pat in city_pats:
                 m = re.search(pat, text, re.I)
                 if m:
-                    val = m.group(1).strip()
+                    val = m.group(1).split('\n')[0].strip()
                     if len(val) > 2 and not any(x in val.upper() for x in ["STATE", "PIN", "DATE", "MOBILE", "ADDRESS"]):
                         summary["city"] = val
                         break
@@ -600,7 +616,9 @@ def summarize_cibil_report(text: str) -> dict:
         active_list = data.get("active_loan_details") or []
         for loan in active_list:
             if isinstance(loan, dict):
-                bal_str = loan.get("outstanding_balance") or loan.get("current_balance") or loan.get("outstanding_amount") or "0"
+                # STRICT: Only sum the actual outstanding balance. 
+                # Do NOT fallback to sanctioned amount or others to avoid 'wrong amount' errors.
+                bal_str = loan.get("outstanding_balance") or "0"
                 bal = safe_int(bal_str)
                 total_balance += bal
         
