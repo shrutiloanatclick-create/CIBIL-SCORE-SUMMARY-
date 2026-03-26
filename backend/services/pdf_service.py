@@ -33,11 +33,16 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
         
         doc.close()
         
-        # Fallback to pdfplumber if fitz didn't get anything
-        if len(extracted_text.strip()) < 50:
-            print("DEBUG: PyMuPDF yielded little text, trying pdfplumber fallback...")
+        # Fallback to pdfplumber if fitz didn't get enough text OR if key markers are missing
+        # CIBIL reports almost always have "ACCOUNT" and "ENQUIRY" sections.
+        has_markers = any(m in extracted_text.upper() for m in ["ACCOUNT", "ENQUIRY", "TRADE LINE"])
+        
+        if len(extracted_text.strip()) < 100 or not has_markers:
+            print(f"DEBUG: PyMuPDF extraction insufficient (Length: {len(extracted_text)}, Markers: {has_markers}). Trying pdfplumber fallback...")
             extracted_text = ""
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                # For very large PDFs, we might want to limit pdfplumber to critical sections,
+                # but for robustness let's try the whole thing first.
                 for page in pdf.pages:
                     page_text = page.extract_text()
                     if page_text:

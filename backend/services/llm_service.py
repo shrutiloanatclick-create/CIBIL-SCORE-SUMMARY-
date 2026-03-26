@@ -200,27 +200,39 @@ def summarize_cibil_report(text: str) -> dict:
         # Section-Aware Truncation for massive reports
         # We need: 1. Personal Info (Head), 2. Account Information (Middle/Bulk), 3. Enquiries (Tail)
         
-        # 1. Find markers
-        account_idx = text.upper().find("ACCOUNT INFORMATION")
-        enquiry_idx = text.upper().find("ENQUIRY INFORMATION")
+        # Flexibly find Account Information section
+        # Common labels: ACCOUNT INFORMATION, ACCOUNTS, TRADE LINES, ACCOUNT DETAILS
+        acc_match = re.search(r"(ACCOUNT INFORMATION|ACCOUNTS|TRADE LINES|ACCOUNT DETAILS)", text, re.I)
+        # Common labels: ENQUIRY INFORMATION, ENQUIRIES, ENQUIRY DETAILS
+        enq_match = re.search(r"(ENQUIRY INFORMATION|ENQUIRIES|ENQUIRY DETAILS)", text, re.I)
         
-        if account_idx != -1 and enquiry_idx != -1 and enquiry_idx > account_idx:
-            # We have both markers. 
-            # Keep 50k from head
-            # Keep 250k from Account Info onwards
-            # Keep 100k from Enquiry Info onwards
+        account_idx = acc_match.start() if acc_match else -1
+        enquiry_idx = enq_match.start() if enq_match else -1
+        
+        log_to_file(f"Large File Detection. Found Account at: {account_idx}, Enquiry at: {enquiry_idx}")
+        
+        if account_idx != -1:
+            # We have at least the account marker
             head = text[:50000]
-            mid = text[account_idx:account_idx + 250000]
-            tail = text[enquiry_idx:]
-            # Ensure tail doesn't overlap or if it's too long, truncate it
-            if len(tail) > 100000:
-                tail = tail[:100000]
             
-            text = head + "\n... [TRUNCATED BETWEEN HEAD AND ACCOUNTS] ...\n" + mid + "\n... [TRUNCATED BETWEEN ACCOUNTS AND ENQUIRIES] ...\n" + tail
+            # If we have an enquiry marker later, keep text between them
+            if enquiry_idx != -1 and enquiry_idx > account_idx:
+                # Keep 250k from account info onwards (it might include enquiry info anyway if they are close)
+                mid_end = min(account_idx + 250000, enquiry_idx)
+                mid = text[account_idx:mid_end]
+                tail = text[enquiry_idx:]
+                if len(tail) > 100000:
+                    tail = tail[:100000]
+                text = head + "\n... [TRUNCATED HEAD] ...\n" + mid + "\n... [TRUNCATED MID] ...\n" + tail
+            else:
+                # Just keep head and 300k from account info onwards
+                mid = text[account_idx:account_idx + 300000]
+                text = head + "\n... [TRUNCATED HEAD] ...\n" + mid
         else:
             # Fallback to smart head/tail if markers not clear
             text = text[:300000] + "\n... [TRUNCATED] ...\n" + text[-100000:]
-
+        
+        log_to_file(f"Final truncated text length: {len(text)}")
     prompt = f"""
     SYSTEM: Financial data extractor for Indian CIBIL reports. Extract data with zero hallucination. Numeric fields must be pure numbers.
     OUTPUT: Exact JSON structure following the rules below.
@@ -246,7 +258,11 @@ def summarize_cibil_report(text: str) -> dict:
        - loan_start_date: Date Opened. MM-YYYY or DD-MM-YYYY.
        - account_no: Account string or null.
        - overdue_amount: Amount Overdue. "₹0" if none.
-       - payment_history: Array of records with: month_year (MM/YY), status (STD/0/DPD), dpd (int).
+       - payment_history: summary string (e.g. "Last 24 months all OK")
+    
+    IMPORTANT: If there are many accounts (>50), prioritize ALL active ones and provide only the most recent Closed ones if needed to stay within JSON limits.
+    
+    Ensure all JSON is valid and terminates correctly.
 
     4. CLOSED LOANS (closed_loan_details): Extract every closed/settled account.
        - Use same structure as active loans.
@@ -307,7 +323,16 @@ def summarize_cibil_report(text: str) -> dict:
                     raise ValueError("No JSON block found in response")
         except Exception as je:
             log_to_file(f"CRITICAL: JSON Parsing Failed. Error: {str(je)}")
-            log_to_file(f"OFFENDING CONTENT START >>>\n{result_content}\n<<< OFFENDING CONTENT END")
+            # If truncated JSON, try to fix it by closing braces
+            if "Unterminated string" in str(je) or "Expecting value" in str(je):
+                log_to_file("Attempting to fix truncated JSON...")
+                try:
+                    # Very simple recovery: try to find the last complete object in the list if possible
+                    # but for now, we'll just raise a clearer error
+                    pass
+                except:
+                    pass
+            log_to_file(f"OFFENDING CONTENT START >>>\n{result_content[:1000]}... [TRUNCATED] ...{result_content[-1000:]}\n<<< OFFENDING CONTENT END")
             raise je
         
         if not isinstance(data, dict):

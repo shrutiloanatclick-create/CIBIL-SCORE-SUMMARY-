@@ -62,6 +62,8 @@ async def upload_cibil_report(file: UploadFile = File(...)):
         else:
              # 2. Process with standard LLM
              print(f"DEBUG: Processing with standard LLM. First 100 chars: {extracted_text[:100]}...")
+             from services.llm_service import log_to_file as audit_log
+             audit_log(f"Processing in main.py. Filename: {file.filename}, Size: {len(content)}, Extracted Chars: {len(extracted_text)}")
              summary_data = summarize_cibil_report(extracted_text)
         
         print(f"DEBUG: Summary data received. Type: {type(summary_data)}")
