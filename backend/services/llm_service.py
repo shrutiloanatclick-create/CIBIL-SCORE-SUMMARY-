@@ -40,14 +40,30 @@ def parse_date(date_str):
     """Helper to parse various Indian date formats (DD-MM-YYYY, DD/MM/YYYY, DD MMM YYYY)."""
     if not date_str or not isinstance(date_str, str): return None
     import datetime
+    
+    # Normalize
+    clean = date_str.strip().upper().replace('/', '-').replace(' ', '-')
+    
+    # Month mapping for alpha months
+    months = {
+        'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04', 'MAY': '05', 'JUN': '06',
+        'JUL': '07', 'AUG': '08', 'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12',
+        'JANUARY': '01', 'FEBRUARY': '02', 'MARCH': '03', 'APRIL': '04', 'JUNE': '06',
+        'JULY': '07', 'AUGUST': '08', 'SEPTEMBER': '09', 'OCTOBER': '10', 'NOVEMBER': '11', 'DECEMBER': '12'
+    }
+    
     try:
-        # Normalize separators
-        clean = date_str.replace('/', '-').replace(' ', '-')
-        # Try DD-MM-YYYY
-        parts = clean.split('-')
+        parts = [p for p in clean.split('-') if p]
         if len(parts) == 3:
             d, m, y = parts[0], parts[1], parts[2]
-            if len(y) == 2: y = "20" + y # Fix 23 -> 2023
+            
+            # Handle alpha month
+            if m in months:
+                m = months[m]
+            
+            if len(y) == 2: 
+                y = "20" + y # Fix 23 -> 2023
+            
             return datetime.datetime(int(y), int(m), int(d))
     except:
         pass
@@ -175,11 +191,15 @@ def summarize_cibil_report(text: str) -> dict:
     
     # Expanded limit: llama-3.1-8b-instant has 128k context. 
     # 50k chars is ~12k tokens, well within limits and covers 99% of reports.
-    max_chars = 50000
+    max_chars = 60000
     if len(text) > max_chars:
-        # Keep 30k chars from head (Personal + Summary + active loans)
-        # Keep 20k chars from tail (Enquiries + Closed loans usually near end)
-        text = text[:30000] + "\n... [TRUNCATED FOR TOKEN LIMIT] ...\n" + text[-20000:]
+        # CIBIL reports: 
+        # - Head contains Personal Info + Summary + First few accounts
+        # - Middle contains most Accounts
+        # - Tail contains Enquiries + Closed accounts
+        # We increase the overlap or take more from the middle if possible.
+        # But for now, let's just increase the total limit and take larger head/tail.
+        text = text[:40000] + "\n... [TRUNCATED FOR TOKEN LIMIT] ...\n" + text[-20000:]
 
     prompt = f"""
     SYSTEM: Financial data extractor for Indian CIBIL reports. Extract data with zero hallucination. Numeric fields must be pure numbers.
@@ -227,9 +247,12 @@ def summarize_cibil_report(text: str) -> dict:
     }}
 
     CRITICAL:
-    - has_late_payments: true if DPD > 0 or status like LPE/SUB/DBT.
-    - enquiry_list must match summary counts.
-    - Extract ALL records found.
+    - has_late_payments: true if any DPD (Days Past Due) > 0 is found in payment_history or account status.
+    - enquiry_list must contain EVERY enquiry found in the "ENQUIRY INFORMATION" section.
+    - account_no: Extract full account number/string if available.
+    - Extract ALL loan records found, even if they seem redundant.
+    - If a field is missing, use null (for strings) or 0 (for numbers). Do not hallucinate.
+    - For payment_history status: Use "STD" for Standard, "000" for 0 DPD, or the actual DPD number (e.g., "030", "060", "090").
 
     REPORT TEXT:
     """ + text + "\n"
@@ -237,15 +260,15 @@ def summarize_cibil_report(text: str) -> dict:
     try:
         log_to_file(f"Starting Groq call. Text length: {len(text)}")
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that strictly outputs JSON. Your output must be a single valid JSON object following the requested schema."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"},
             temperature=0.1,
-            max_tokens=3000, # Increased to capture all accounts and enquiries
-            timeout=60, # 1 minute timeout for Groq
+            max_tokens=4000, # Increased to capture all accounts and enquiries
+            timeout=90, # Increased for 70b model
         )
         
         result_content = response.choices[0].message.content.strip()
@@ -287,23 +310,25 @@ def summarize_cibil_report(text: str) -> dict:
             # Highly flexible name pattern: Allows dots, spaces, and various prefix labels
             # We look for labels and then capture up to the next newline or common divider
             name_pats = [
-                r"(?:Name|Consumer Name|Applicant Name)\s*[:\-]?\s*([A-Z\.\s]{3,50})",
+                r"(?:Name|Consumer Name|Applicant Name|CONSUMER INFORMATION|APPLICANT)\s*[:\-]?\s*([A-Z\.\s]{3,60})",
                 r"Name\s+([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", # Mixed case fallback
+                r"NAME:\s*([A-Z\s]+)",
             ]
             for pat in name_pats:
                 m = re.search(pat, text, re.I)
                 if m:
                     val = m.group(1).split('\n')[0].strip()
                     # Filter out noise like "REPORT" or "DATE"
-                    if len(val) > 3 and not any(x in val.upper() for x in ["REPORT", "CIBIL", "DATE", "SCORE"]):
+                    if len(val) > 3 and not any(x in val.upper() for x in ["REPORT", "CIBIL", "DATE", "SCORE", "CONTROL"]):
                         summary["name"] = val
                         break
         
         # 2. DOB Extraction
         if is_bad(summary.get("dob"), "DD-MM-YYYY"):
             dob_pats = [
-                r"(?:Date Of Birth|DOB|Birth Date)\s*[:\-]?\s*(\d{2}[-/\s]\d{2}[-/\s]\d{4})",
+                r"(?:Date Of Birth|DOB|Birth Date|Birthdate)\s*[:\-]?\s*(\d{2}[-/\s]\d{2}[-/\s]\d{4})",
                 r"(\d{2}-\d{2}-\d{4})", # Naked date search
+                r"DOB:\s*(\d{2}-\d{2}-\d{4})",
             ]
             for pat in dob_pats:
                 m = re.search(pat, text, re.I)

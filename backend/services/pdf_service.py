@@ -5,12 +5,12 @@ import re
 import os
 
 def clean_text(text: str) -> str:
-    """Preprocess extracted text: remove extra horizontal spaces but keep structure."""
-    # Replace multiple horizontal spaces with a single space, but keep newlines
-    text = re.sub(r'[ \t]+', ' ', text)
-    # Remove leading/trailing whitespace
-    text = text.strip()
-    return text
+    """Preprocess extracted text: keep structure by not collapsing all spaces."""
+    # Replace tabs with multiple spaces
+    text = text.replace('\t', '    ')
+    # Remove leading/trailing whitespace on each line
+    lines = [line.strip() for line in text.split('\n')]
+    return '\n'.join(lines)
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     """
