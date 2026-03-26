@@ -199,51 +199,98 @@ def calculate_deterministic_risk(data: dict) -> tuple:
 
     return final_level, reasons, delinquency_details
 
+def extract_loans_from_chunk(chunk_text: str) -> dict:
+    """Helper to extract active and closed loans from a specific text chunk."""
+    prompt = f"""
+    SYSTEM: Extract ONLY 'active_loan_details' and 'closed_loan_details' from this fragment of a credit report.
+    Format your response as a JSON object with these two keys. 
+    If a loan is partially cut off at the start or end, ignore it.
+    
+    TEXT FRAGMENT:
+    {chunk_text}
+    
+    OUTPUT SCHEMA:
+    {{
+      "active_loan_details": [
+        {{ "lender_name": "", "account_no": "", "loan_type": "", "sanctioned_amount": 0, "current_balance": 0, "overdue_amount": 0, "has_late_payments": false }}
+      ],
+      "closed_loan_details": [
+        {{ "lender_name": "", "account_no": "", "loan_type": "", "sanctioned_amount": 0, "closed_date": "" }}
+      ]
+    }}
+    """
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=4000
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        log_to_file(f"Chunk extraction error: {e}")
+        return {"active_loan_details": [], "closed_loan_details": []}
+
 def summarize_cibil_report(text: str) -> dict:
     """
     Send text to Groq Llama 3 for extraction.
-    We ask the model to output exactly JSON so we can parse it reliably.
+    For large reports, we process the account information section in chunks to avoid truncation.
     """
+    original_text = text # Keep for regex fallbacks
     
-    max_chars = 400000
-    if len(text) > max_chars:
-        # Section-Aware Truncation for massive reports
-        # We need: 1. Personal Info (Head), 2. Account Information (Middle/Bulk), 3. Enquiries (Tail)
+    # 1. Identify sections
+    acc_match = re.search(r"(ACCOUNT INFORMATION|ACCOUNT SUMMARY|ACCOUNTS|TRADE LINES|ACCOUNT DETAILS|CREDIT SUMMARY)", text, re.I)
+    enq_match = re.search(r"(ENQUIRY INFORMATION|ENQUIRIES|ENQUIRY DETAILS|ENQUIRY SUMMARY)", text, re.I)
+    
+    account_idx = acc_match.start() if acc_match else -1
+    enquiry_idx = enq_match.start() if enq_match else -1
+    
+    all_active_loans = []
+    all_closed_loans = []
+    
+    # If the report is large, chunk the account section
+    if len(text) > 150000 and account_idx != -1:
+        log_to_file(f"Large report detected ({len(text)} chars). Starting chunked extraction.")
         
-        # Flexibly find Account Information section
-        # CIBIL labels: ACCOUNT INFORMATION, ACCOUNTS
-        # Experian labels: ACCOUNT SUMMARY, ACCOUNT DETAILS, TRADE LINES, CREDIT SUMMARY
-        acc_match = re.search(r"(ACCOUNT INFORMATION|ACCOUNT SUMMARY|ACCOUNTS|TRADE LINES|ACCOUNT DETAILS|CREDIT SUMMARY)", text, re.I)
-        # Search for Enquiry Info
-        enq_match = re.search(r"(ENQUIRY INFORMATION|ENQUIRIES|ENQUIRY DETAILS|ENQUIRY SUMMARY)", text, re.I)
+        # Define the account info block (from account_idx to enquiry_idx or end)
+        account_block_end = enquiry_idx if enquiry_idx > account_idx else len(text)
+        account_block = text[account_idx:account_block_end]
         
-        account_idx = acc_match.start() if acc_match else -1
-        enquiry_idx = enq_match.start() if enq_match else -1
+        # Process in 120k chunks with 20k overlap to avoid cutting loans in half
+        chunk_size = 120000
+        overlap = 20000
         
-        log_to_file(f"Large File Detection. Found Account at: {account_idx}, Enquiry at: {enquiry_idx}")
-        
-        if account_idx != -1:
-            # We have at least the account marker
-            head = text[:100000]
+        for start in range(0, len(account_block), chunk_size - overlap):
+            chunk = account_block[start:start + chunk_size]
+            log_to_file(f"Processing account chunk: {start} to {start + len(chunk)}")
+            result = extract_loans_from_chunk(chunk)
             
-            # If we have an enquiry marker later, keep text between them
-            if enquiry_idx != -1 and enquiry_idx > account_idx:
-                # Keep 250k from account info onwards (it might include enquiry info anyway if they are close)
-                mid_end = min(account_idx + 250000, enquiry_idx)
-                mid = text[account_idx:mid_end]
-                tail = text[enquiry_idx:]
-                if len(tail) > 100000:
-                    tail = tail[:100000]
-                text = head + "\n... [TRUNCATED HEAD] ...\n" + mid + "\n... [TRUNCATED MID] ...\n" + tail
-            else:
-                # Just keep head and 300k from account info onwards
-                mid = text[account_idx:account_idx + 300000]
-                text = head + "\n... [TRUNCATED HEAD] ...\n" + mid
-        else:
-            # Fallback to smart head/tail if markers not clear
-            text = text[:300000] + "\n... [TRUNCATED] ...\n" + text[-100000:]
-        
-        log_to_file(f"Final truncated text length: {len(text)}")
+            # Simple deduplication during merge
+            def get_loan_id(loan):
+                return f"{loan.get('lender_name', '')}-{loan.get('account_no', '')}-{loan.get('sanctioned_amount', 0)}"
+            
+            existing_ids = {get_loan_id(l) for l in all_active_loans}
+            for l in result.get("active_loan_details", []):
+                if get_loan_id(l) not in existing_ids:
+                    all_active_loans.append(l)
+            
+            existing_closed_ids = {get_loan_id(l) for l in all_closed_loans}
+            for l in result.get("closed_loan_details", []):
+                if get_loan_id(l) not in existing_closed_ids:
+                    all_closed_loans.append(l)
+                    
+            if len(all_active_loans) + len(all_closed_loans) > 300:
+                log_to_file("Safety cap: Reached 300 loans, stopping chunked extraction.")
+                break
+
+    # 2. Main Prompt for Summary Data (Using first 100k + tail 50k)
+    # We include a subset of account info just for the summary totals if they are there
+    head = text[:100000]
+    tail = text[-50000:] if enquiry_idx == -1 else text[enquiry_idx:enquiry_idx + 50000]
+    
+    truncated_text = head + "\n... [CHUNKED LOANS PROCESSING] ...\n" + tail
+    
     prompt = f"""
     SYSTEM: Financial data extractor for Indian CIBIL and EXPERIAN reports. Extract data with zero hallucination. Numeric fields must be pure numbers.
     OUTPUT: Exact JSON structure following the rules below.
@@ -303,7 +350,7 @@ def summarize_cibil_report(text: str) -> dict:
     - For payment_history status: Use "STD" for Standard, "000" for 0 DPD, or the actual DPD number (e.g., "030", "060", "090").
 
     REPORT TEXT:
-    """ + text + "\n"
+    """ + truncated_text + "\n"
 
     try:
         log_to_file(f"Starting Groq call. Text length: {len(text)}")
@@ -350,6 +397,29 @@ def summarize_cibil_report(text: str) -> dict:
         if not isinstance(data, dict):
             # Fallback for LLMs returning lists or other types
             data = {"summary": {}, "error": "Model failed to return a valid dictionary"}
+
+        # --- MERGE CHUNKED LOANS ---
+        def get_loan_id(loan):
+            if not isinstance(loan, dict): return "invalid"
+            return f"{str(loan.get('lender_name', '')).strip().upper()}-{str(loan.get('account_no', '')).strip().upper()}-{safe_int(loan.get('sanctioned_amount', 0))}"
+
+        existing_active_ids = {get_loan_id(l) for l in all_active_loans}
+        main_active = data.get("active_loan_details", [])
+        if not isinstance(main_active, list): main_active = []
+        for l in main_active:
+            if get_loan_id(l) not in existing_active_ids:
+                all_active_loans.append(l)
+                existing_active_ids.add(get_loan_id(l))
+        data["active_loan_details"] = all_active_loans
+
+        existing_closed_ids = {get_loan_id(l) for l in all_closed_loans}
+        main_closed = data.get("closed_loan_details", [])
+        if not isinstance(main_closed, list): main_closed = []
+        for l in main_closed:
+            if get_loan_id(l) not in existing_closed_ids:
+                all_closed_loans.append(l)
+                existing_closed_ids.add(get_loan_id(l))
+        data["closed_loan_details"] = all_closed_loans
 
         # --- HARD FALLBACK: Ultra-Aggressive search for missing personal details ---
         summary = data.get("summary")
