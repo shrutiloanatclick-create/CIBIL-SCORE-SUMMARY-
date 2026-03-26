@@ -247,7 +247,8 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                     </div>
                     <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Active Exposure</div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-                        <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{summary.outstanding_amount || computedTotalOutstanding || '₹0'}</span>
+                        {/* Always use computed total as the single source of truth to match the breakdown exactly */}
+                        <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{computedTotalOutstanding || '₹0'}</span>
                     </div>
                 </div>
 
@@ -402,7 +403,8 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                         {Object.entries(categoryBreakdown).map(([cat, info]) => {
                             const isExpanded = activeCategory === cat;
                             const catOutstanding = Array.isArray(info.items) ? info.items.reduce((s, l) => {
-                                const v = parseInt(String(l.outstanding_balance || l.loan_amount || '0').replace(/[^0-9]/g, '')) || 0;
+                                // Consistent with computedTotalOutstanding logic
+                                const v = parseInt(String(l.outstanding_balance || '0').replace(/[^0-9]/g, '')) || 0;
                                 return s + v;
                             }, 0) : 0;
                             const catOutStr = catOutstanding > 0 ? '₹' + catOutstanding.toLocaleString('en-IN') : null;
@@ -527,23 +529,26 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
-                        {data.outstanding_balance_summary && data.outstanding_balance_summary.length > 0 ? (
-                            data.outstanding_balance_summary.map((item, idx) => (
+                        {Object.entries(categoryBreakdown).map(([cat, info], idx) => {
+                            const catOutstandingTotal = info.items.reduce((s, l) => {
+                                const v = parseInt(String(l.outstanding_balance || '0').replace(/[^0-9]/g, '')) || 0;
+                                return s + v;
+                            }, 0);
+                            
+                            if (info.count === 0) return null;
+
+                            return (
                                 <div key={idx} className="glass-panel" style={{ padding: '1.5rem', background: 'var(--panel-sub-bg)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                     <div>
-                                        <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem' }}>{item.category}</div>
-                                        <div style={{ fontSize: '1.3rem', fontWeight: '900', color: 'var(--text-main)' }}>{item.balance}</div>
+                                        <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem' }}>{cat}</div>
+                                        <div style={{ fontSize: '1.3rem', fontWeight: '900', color: 'var(--text-main)' }}>₹{catOutstandingTotal.toLocaleString('en-IN')}</div>
                                     </div>
                                     <div style={{ textAlign: 'right' }}>
-                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)', fontWeight: '700' }}>{item.accounts} Accounts</div>
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)', fontWeight: '700' }}>{info.count} Accounts</div>
                                     </div>
                                 </div>
-                            ))
-                        ) : (
-                            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-dim)', gridColumn: 'span 2' }}>
-                                No outstanding balance breakdown available.
-                            </div>
-                        )}
+                            );
+                        })}
                     </div>
                 </div>
             )}
