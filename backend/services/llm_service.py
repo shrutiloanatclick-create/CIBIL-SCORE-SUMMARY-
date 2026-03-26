@@ -47,7 +47,8 @@ def safe_int(val, default=0):
         cleaned = re.sub(r'[^\d.]', '', s_val)
         if not cleaned:
             return default
-        return int(float(cleaned))
+        # Use round() to match frontend Math.round() logic
+        return int(round(float(cleaned)))
     except (ValueError, TypeError):
         return default
 

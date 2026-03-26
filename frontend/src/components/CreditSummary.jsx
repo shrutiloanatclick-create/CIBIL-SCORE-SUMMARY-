@@ -69,7 +69,9 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
         const loans = data?.active_loan_details || [];
         if (!Array.isArray(loans) || loans.length === 0) return null;
         const total = loans.reduce((sum, loan) => {
-            const v = parseInt(String(loan.outstanding_balance || '0').replace(/[^0-9]/g, '')) || 0;
+            // Decimal-safe parsing: allow . and -
+            const valStr = String(loan.outstanding_balance || '0').replace(/[^0-9.]/g, '');
+            const v = Math.round(parseFloat(valStr) || 0);
             return sum + v;
         }, 0);
         return total > 0 ? '₹' + total.toLocaleString('en-IN') : null;
@@ -404,8 +406,8 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                         {Object.entries(categoryBreakdown).map(([cat, info]) => {
                             const isExpanded = activeCategory === cat;
                             const catOutstanding = Array.isArray(info.items) ? info.items.reduce((s, l) => {
-                                // Consistent with computedTotalOutstanding logic
-                                const v = parseInt(String(l.outstanding_balance || '0').replace(/[^0-9]/g, '')) || 0;
+                                const valStr = String(l.outstanding_balance || '0').replace(/[^0-9.]/g, '');
+                                const v = Math.round(parseFloat(valStr) || 0);
                                 return s + v;
                             }, 0) : 0;
                             const catOutStr = catOutstanding > 0 ? '₹' + catOutstanding.toLocaleString('en-IN') : null;
@@ -531,10 +533,9 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
                         {Object.entries(categoryBreakdown).map(([cat, info], idx) => {
-                            const catOutstandingTotal = info.items.reduce((s, l) => {
-                                const v = parseInt(String(l.outstanding_balance || '0').replace(/[^0-9]/g, '')) || 0;
+                                const valStr = String(l.outstanding_balance || '0').replace(/[^0-9.]/g, '');
+                                const v = Math.round(parseFloat(valStr) || 0);
                                 return s + v;
-                            }, 0);
                             
                             if (info.count === 0) return null;
 
@@ -558,84 +559,64 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
             {showBreakdown && (
                 <div className="glass-panel fade-in" style={{
                     marginBottom: '1rem',
-                    padding: '1.25rem 1.5rem',
+                    padding: '1.5rem',
                     background: 'rgba(167, 139, 250, 0.05)',
-                    border: '1px solid rgba(167, 139, 250, 0.12)',
+                    border: '1px solid rgba(167, 139, 250, 0.2)',
                     animation: 'slideDown 0.3s ease-out'
                 }}>
-                    <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <h3 style={{ fontSize: '1rem', fontWeight: '800', color: '#A78BFA', display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
-                            <Landmark size={18} />
-                            Account Breakdown
-                        </h3>
+                    <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                            <h3 style={{ fontSize: '1.4rem', fontWeight: '700', color: '#A78BFA', display: 'flex', alignItems: 'center', gap: '1rem', margin: 0 }}>
+                                <Landmark size={24} />
+                                Active Portfolio Details
+                            </h3>
+                            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.4rem' }}>
+                                Showing <span style={{ color: 'var(--text-main)', fontWeight: '800' }}>{activeLoanDetails.length}</span> active accounts across {Object.values(categoryBreakdown).filter(v => v.count > 0).length} categories.
+                            </p>
+                        </div>
+                        <button className="btn-secondary" onClick={() => {
+                            setShowBreakdown(false);
+                            setShowClosedBreakdown(false);
+                        }}>Close Portfolio</button>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.75rem' }}>
-                        {Object.entries(categoryBreakdown).map(([category, info]) => (
-                            <button
-                                key={category}
-                                onClick={() => setActiveCategory(activeCategory === category ? null : category)}
-                                style={{
-                                    padding: '0.75rem 1rem',
-                                    background: activeCategory === category ? 'rgba(167, 139, 250, 0.2)' : 'rgba(255, 255, 255, 0.03)',
-                                    borderRadius: '0.75rem',
-                                    border: `1px solid ${activeCategory === category ? '#A78BFA' : 'rgba(255, 255, 255, 0.04)'}`,
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    gap: '0.5rem'
-                                }}
-                            >
-                                <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-main)' }}>{category}</span>
-                                <span style={{ fontSize: '0.9rem', fontWeight: '800', color: info.count > 0 ? '#A78BFA' : 'var(--text-dim)' }}>{info.count}</span>
-                            </button>
-                        ))}
-                    </div>
-
-                    {activeCategory && categoryBreakdown[activeCategory].items.length > 0 && (
-                        <div className="fade-in" style={{ marginTop: '2rem', animation: 'fadeIn 0.3s ease-out' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                                <h4 style={{ fontWeight: '700', color: 'var(--text-main)' }}>{activeCategory} Details</h4>
-                                <button className="btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }} onClick={() => setActiveCategory(null)}>Close</button>
-                            </div>
+                    {/* Unified Active Table - Always show for 100% transparency */}
+                    {activeLoanDetails.length > 0 ? (
+                        <>
                             <div className="data-table-container">
                                 <table className="data-table">
                                     <thead>
                                         <tr>
                                             <th>Lender</th>
-                                            <th>Amount</th>
+                                            <th>Account Type</th>
+                                            <th>Sanctioned</th>
                                             <th>Current Bal</th>
-                                            <th>Overdue</th>
-                                            <th>Status</th>
+                                            <th>Monthly EMI</th>
+                                            <th>Opened</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {categoryBreakdown[activeCategory].items.map((loan, i) => (
+                                        {activeLoanDetails.map((loan, i) => (
                                             <tr 
                                                 key={i}
                                                 className="clickable-row"
                                                 onClick={() => setSelectedLoan(loan)}
                                             >
-                                                <td style={{ fontWeight: '600' }}>{loan.lender_name}</td>
-                                                <td>{loan.loan_amount}</td>
-                                                <td style={{ color: 'var(--accent-color)', fontWeight: '600' }}>{loan.outstanding_balance}</td>
-                                                <td style={{ color: (loan.overdue_amount && loan.overdue_amount !== '₹0') ? '#ef4444' : 'var(--text-dim)', fontWeight: '700' }}>{loan.overdue_amount || '₹0'}</td>
-                                                <td>
-                                                    <span style={{
-                                                        padding: '0.2rem 0.5rem',
-                                                        borderRadius: '100px',
-                                                        fontSize: '0.7rem',
-                                                        background: 'rgba(16, 185, 129, 0.1)',
-                                                        color: 'var(--success-color)',
-                                                        fontWeight: '700'
-                                                    }}>Active</span>
-                                                </td>
+                                                <td style={{ fontWeight: '700' }}>{loan.lender_name || '—'}</td>
+                                                <td style={{ color: 'var(--text-dim)' }}>{loan.loan_type || '—'}</td>
+                                                <td style={{ fontWeight: '600' }}>{loan.loan_amount || '—'}</td>
+                                                <td style={{ color: 'var(--accent-color)', fontWeight: '800' }}>{loan.outstanding_balance || '—'}</td>
+                                                <td style={{ color: '#60a5fa', fontWeight: '700' }}>{loan.emi || '—'}</td>
+                                                <td style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>{loan.loan_start_date || '—'}</td>
                                             </tr>
                                         ))}
                                     </tbody>
                                 </table>
                             </div>
+                        </>
+                    ) : (
+                        <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                            No active accounts found in the primary listing.
                         </div>
                     )}
                 </div>
