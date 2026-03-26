@@ -265,7 +265,8 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
                     </div>
                     <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Account Portfolio</div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-                        <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{summary.total_loans || (activeLoanDetails.length + closedLoanDetails.length)}</span>
+                        {/* Always use the actual count from the detail lists for 100% accuracy */}
+                        <span style={{ fontSize: '2rem', fontWeight: '900', color: 'var(--text-main)' }}>{activeLoanDetails.length + closedLoanDetails.length}</span>
                         <span style={{ color: 'var(--text-dim)', fontWeight: '600', fontSize: '0.9rem' }}>Total accounts</span>
                     </div>
                 </div>

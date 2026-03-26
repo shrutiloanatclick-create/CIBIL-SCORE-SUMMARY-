@@ -239,11 +239,40 @@ def extract_loans_from_chunk(chunk_text: str) -> dict:
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.1,
-            max_tokens=8000 # Increased to ensure no truncation of large lists
+            max_tokens=8000 
         )
-        return json.loads(response.choices[0].message.content)
+        result_content = response.choices[0].message.content.strip()
+        
+        try:
+            return json.loads(result_content)
+        except Exception as je:
+            log_to_file(f"Truncated/Mangled JSON in chunk. Attempting Recovery... Error: {je}")
+            # PARTIAL RECOVERY: Extract objects using regex if JSON is truncated
+            recovered_active = []
+            recovered_closed = []
+            
+            # Find all objects that look like active/closed loan records
+            # We look for common keys to identify loan objects
+            loan_objects = re.findall(r'\{[^{}]*?"lender_name"[^{}]*?\}', result_content, re.S)
+            for obj_str in loan_objects:
+                try:
+                    if not obj_str.endswith('}'): obj_str += '}'
+                    loan = json.loads(obj_str)
+                    if loan.get("lender_name"):
+                        # Logic to sort into active/closed if truncated
+                        if loan.get("date_closed") or "closed" in str(loan).lower():
+                            recovered_closed.append(loan)
+                        else:
+                            recovered_active.append(loan)
+                except: continue
+            
+            if recovered_active or recovered_closed:
+                log_to_file(f"RECOVERED {len(recovered_active)} active and {len(recovered_closed)} closed loans via Regex.")
+                return {"active_loan_details": recovered_active, "closed_loan_details": recovered_closed}
+            raise je
+
     except Exception as e:
-        log_to_file(f"Chunk extraction error: {e}")
+        log_to_file(f"Chunk extraction failed completely: {e}")
         return {"active_loan_details": [], "closed_loan_details": []}
 
 def summarize_cibil_report(text: str) -> dict:
@@ -281,20 +310,25 @@ def summarize_cibil_report(text: str) -> dict:
         account_block_end = enquiry_idx if (enquiry_idx > account_idx) else len(text)
         account_block = text[account_idx:account_block_end]
         
-        # Process in smaller 60k chunks with 25k overlap
-        chunk_size = 60000
-        overlap = 25000
+        # Process in smaller 40k chunks with 20k overlap to ensure JSON responses 
+        # stay within LLM token limits (preventing truncation/data loss)
+        chunk_size = 40000
+        overlap = 20000
         
         for start in range(0, len(account_block), chunk_size - overlap):
             chunk = account_block[start:start + chunk_size]
             log_to_file(f"Processing account chunk: {start} to {start + len(chunk)}")
             result = extract_loans_from_chunk(chunk)
             
-            # Refined deduplication: include more fields to allow sibling loans with same amounts
+            # Robust ID: Mask-resilient (handles XXXX1234 vs 1234)
             def get_loan_id(loan):
                 if not isinstance(loan, dict): return "invalid"
-                lid = f"{str(loan.get('lender_name', '')).strip().upper()}-"
-                lid += f"{str(loan.get('account_no', '')).strip().upper()}-"
+                lender = str(loan.get('lender_name', '')).strip().upper()
+                # Use only last 4 digits of account to handle varying mask patterns in chunks
+                acc_raw = str(loan.get('account_no', '')).strip()
+                acc_suffix = acc_raw[-4:] if len(acc_raw) >= 4 else acc_raw
+                
+                lid = f"{lender}-{acc_suffix}-"
                 lid += f"{safe_int(loan.get('loan_amount', 0))}-"
                 lid += f"{safe_int(loan.get('outstanding_balance', 0))}-"
                 lid += f"{str(loan.get('loan_start_date', '')).strip()}"
@@ -708,12 +742,45 @@ def summarize_cibil_report_vision(pdf_bytes: bytes) -> dict:
         try:
             try:
                 data = json.loads(result_content)
-            except:
+            except Exception as e:
+                log_to_file(f"Standard JSON parse failed for vision response: {e}. Attempting Partial Recovery...")
                 json_match = re.search(r"(\{.*\})", result_content, re.DOTALL)
                 if json_match:
                     data = json.loads(json_match.group(1))
                 else:
-                    raise ValueError("No JSON block found in vision response")
+                    # If no full JSON block, try to recover individual loan objects
+                    recovered_active = []
+                    recovered_enquiries = []
+                    
+                    # Find all objects that look like loan records
+                    loan_objects = re.findall(r'\{[^{}]*?"lender_name"[^{}]*?\}', result_content, re.S)
+                    for obj_str in loan_objects:
+                        try:
+                            if not obj_str.endswith('}'): obj_str += '}'
+                            loan = json.loads(obj_str)
+                            if loan.get("lender_name"):
+                                recovered_active.append(loan)
+                        except: continue
+                    
+                    # Find all objects that look like enquiry records
+                    enquiry_objects = re.findall(r'\{[^{}]*?"lender"[^{}]*?\}', result_content, re.S)
+                    for obj_str in enquiry_objects:
+                        try:
+                            if not obj_str.endswith('}'): obj_str += '}'
+                            enquiry = json.loads(obj_str)
+                            if enquiry.get("lender"):
+                                recovered_enquiries.append(enquiry)
+                        except: continue
+
+                    if recovered_active or recovered_enquiries:
+                        log_to_file(f"RECOVERED {len(recovered_active)} active loans and {len(recovered_enquiries)} enquiries from truncated vision response.")
+                        data = {
+                            "active_loan_details": recovered_active,
+                            "enquiry_list": recovered_enquiries,
+                            "summary": {} # Initialize summary, will be filled by normalization
+                        }
+                    else:
+                        raise ValueError("No JSON block or recoverable objects found in vision response")
         except Exception as e:
             log_to_file(f"Vision JSON Error: {e}\nContent: {result_content}")
             return {"error": "Failed to parse vision model output."}
