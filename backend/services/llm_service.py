@@ -15,10 +15,17 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 def log_to_file(msg):
     try:
-        log_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "backend_audit.log")
+        # Use an absolute workspace-relative path to ensure it's found
+        log_path = r"c:\Users\dell\Downloads\CIBIL-SUMMARY-\CIBIL-SUMMARY-\backend_audit.log"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"[{os.getpid()}] {msg}\n")
     except Exception as e:
+        # If writing to the main log fails, try a very simple local file
+        try:
+            with open("simple_audit.log", "a") as f2:
+                f2.write(f"{str(e)}\n")
+        except:
+            pass
         # Print to stderr if log writing fails so it shows up in terminal logs
         import sys
         print(f"DEBUG: log_to_file failed: {e}", file=sys.stderr)
@@ -201,10 +208,11 @@ def summarize_cibil_report(text: str) -> dict:
         # We need: 1. Personal Info (Head), 2. Account Information (Middle/Bulk), 3. Enquiries (Tail)
         
         # Flexibly find Account Information section
-        # Common labels: ACCOUNT INFORMATION, ACCOUNTS, TRADE LINES, ACCOUNT DETAILS
-        acc_match = re.search(r"(ACCOUNT INFORMATION|ACCOUNTS|TRADE LINES|ACCOUNT DETAILS)", text, re.I)
-        # Common labels: ENQUIRY INFORMATION, ENQUIRIES, ENQUIRY DETAILS
-        enq_match = re.search(r"(ENQUIRY INFORMATION|ENQUIRIES|ENQUIRY DETAILS)", text, re.I)
+        # CIBIL labels: ACCOUNT INFORMATION, ACCOUNTS
+        # Experian labels: ACCOUNT SUMMARY, ACCOUNT DETAILS, TRADE LINES, CREDIT SUMMARY
+        acc_match = re.search(r"(ACCOUNT INFORMATION|ACCOUNT SUMMARY|ACCOUNTS|TRADE LINES|ACCOUNT DETAILS|CREDIT SUMMARY)", text, re.I)
+        # Search for Enquiry Info
+        enq_match = re.search(r"(ENQUIRY INFORMATION|ENQUIRIES|ENQUIRY DETAILS|ENQUIRY SUMMARY)", text, re.I)
         
         account_idx = acc_match.start() if acc_match else -1
         enquiry_idx = enq_match.start() if enq_match else -1
@@ -234,7 +242,7 @@ def summarize_cibil_report(text: str) -> dict:
         
         log_to_file(f"Final truncated text length: {len(text)}")
     prompt = f"""
-    SYSTEM: Financial data extractor for Indian CIBIL reports. Extract data with zero hallucination. Numeric fields must be pure numbers.
+    SYSTEM: Financial data extractor for Indian CIBIL and EXPERIAN reports. Extract data with zero hallucination. Numeric fields must be pure numbers.
     OUTPUT: Exact JSON structure following the rules below.
 
     EXTRACTION RULES:
