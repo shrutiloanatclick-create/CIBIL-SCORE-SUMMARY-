@@ -37,9 +37,10 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
         
         print(f"DEBUG: Discovery Result -> Account Start: Pg {account_start_pg + 1}, Enquiry Start: Pg {enquiry_start_pg + 1}")
         
-        # 2. Extract Header (first 5 pages) with fitz (fast)
+        # 2. Extract Header (from start up to account_start_pg) with fitz (fast)
         head_text = ""
-        for i in range(min(total_pages, 5)):
+        header_end = account_start_pg if account_start_pg != -1 else min(total_pages, 5)
+        for i in range(header_end):
             head_text += doc[i].get_text() + "\n"
             
         # 3. Extract Detailed Account Section with pdfplumber (precise layout)
@@ -54,6 +55,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
                 for pg_idx in range(account_start_pg, end_pg):
                     if pg_idx >= len(pdf.pages): break
                     pg = pdf.pages[pg_idx]
+                    # Extract with layout=True for columnar alignment
                     account_block_text += pg.extract_text(layout=True) or ""
                     account_block_text += "\n--- PAGE BREAK ---\n"
         else:

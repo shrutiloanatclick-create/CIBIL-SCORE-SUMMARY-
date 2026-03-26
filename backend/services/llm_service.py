@@ -216,9 +216,10 @@ def extract_loans_from_chunk(chunk_text: str) -> dict:
     - "Account Number" -> 'account_no'
     
     CRITICAL RULES:
-    1. Extract EVERY SINGLE LOAN. Do not summarize or skip similar records.
-    2. BALANCE GUARD: Always use 'Current Balance' for 'outstanding_balance'. NEVER use 'Sanctioned Amount' for outstanding balance.
-    3. DATA FIDELITY: Preserve the full Lender Name and Account Number string. 
+    1. Extract EVERY SINGLE LOAN. If there are 3 similar loans from the same bank, extract ALL THREE as separate entries. DO NOT CONSOLIDATE.
+    2. ZERO OMISSION: If the text shows 10 loans, your JSON must have 10 loans.
+    3. BALANCE GUARD: Always use 'Current Balance' for 'outstanding_balance'. NEVER use 'Sanctioned Amount' for outstanding balance.
+    4. DATA FIDELITY: Preserve the full Lender Name and Account Number string. 
     
     OUTPUT: A JSON object with "active_loan_details" and "closed_loan_details" arrays.
     SCHEMA: {{
@@ -320,36 +321,51 @@ def summarize_cibil_report(text: str) -> dict:
             log_to_file(f"Processing account chunk: {start} to {start + len(chunk)}")
             result = extract_loans_from_chunk(chunk)
             
-            # Robust ID: Mask-resilient (handles XXXX1234 vs 1234)
+            # Robust ID: Mask-resilient and Normalization-aware
             def get_loan_id(loan):
                 if not isinstance(loan, dict): return "invalid"
-                lender = str(loan.get('lender_name', '')).strip().upper()
-                # Use only last 4 digits of account to handle varying mask patterns in chunks
+                # NORMALIZE LENDER: Remove spaces, non-alphanumeric, and common noise
+                lender_raw = str(loan.get('lender_name', '')).strip().upper()
+                lender = re.sub(r'[^A-Z0-9]', '', lender_raw).replace('BANK', '').replace('NBFC', '')
+                
+                # Use only last 4 digits of account to handle varying mask patterns
                 acc_raw = str(loan.get('account_no', '')).strip()
                 acc_suffix = acc_raw[-4:] if len(acc_raw) >= 4 else acc_raw
+                
+                # NORMALIZE DATE: Key for deduplication across chunks
+                date_raw = str(loan.get('loan_start_date', '')).strip()
+                parsed_date = parse_date(date_raw)
+                date_key = parsed_date.strftime('%Y%m') if parsed_date else date_raw.upper()
                 
                 lid = f"{lender}-{acc_suffix}-"
                 lid += f"{safe_int(loan.get('loan_amount', 0))}-"
                 lid += f"{safe_int(loan.get('outstanding_balance', 0))}-"
-                lid += f"{str(loan.get('loan_start_date', '')).strip()}"
+                lid += f"{date_key}"
                 return lid
             
-            existing_ids = {get_loan_id(l) for l in all_active_loans}
-            for l in result.get("active_loan_details", []):
-                new_id = get_loan_id(l)
-                # If we have a very specific ID (with account_no), use it.
-                # If account_no is missing, we still deduplicate by date/balance to be safe-ish but less aggressive.
-                if new_id not in existing_ids:
-                    all_active_loans.append(l)
-                    existing_ids.add(new_id)
+            seen_ids = set()
+            unique_active = []
+            for l in all_active_loans:
+                lid = get_loan_id(l)
+                if lid not in seen_ids:
+                    # Double-check status (sometimes Model mis-categorizes)
+                    if not (l.get("date_closed") or "closed" in str(l).lower() or "settled" in str(l).lower()):
+                        unique_active.append(l)
+                        seen_ids.add(lid)
+                    else:
+                        all_closed_loans.append(l)
             
-            existing_closed_ids = {get_loan_id(l) for l in all_closed_loans}
-            for l in result.get("closed_loan_details", []):
-                new_id = get_loan_id(l)
-                if new_id not in existing_closed_ids:
-                    all_closed_loans.append(l)
-                    existing_closed_ids.add(new_id)
-                    
+            seen_closed_ids = set()
+            unique_closed = []
+            for l in all_closed_loans:
+                lid = get_loan_id(l)
+                if lid not in seen_closed_ids:
+                    unique_closed.append(l)
+                    seen_closed_ids.add(lid)
+
+            all_active_loans = unique_active
+            all_closed_loans = unique_closed
+            
             if len(all_active_loans) + len(all_closed_loans) > 500: # Increased cap for massive reports
                 log_to_file("Safety cap: Reached 500 loans, stopping chunked extraction.")
                 break
@@ -617,24 +633,44 @@ def summarize_cibil_report(text: str) -> dict:
         # Trust actual list lengths as source of truth for counts
         active_list = data.get("active_loan_details", [])
         if not isinstance(active_list, list): active_list = []
-        summary["active_loans"] = len(active_list)
+        
+        # FINAL GLOBAL DEDUPLICATION (Fuzzy/Multi-Key)
+        # Sometimes even with good IDs, minor variations slip through.
+        # We merge loans with identical amount/balance/date and very similar lender names.
+        def get_fuzzy_key(loan):
+            amt = safe_int(loan.get("loan_amount"))
+            bal = safe_int(loan.get("outstanding_balance"))
+            dt = str(loan.get("loan_start_date") or "").strip()[:7] # Just YYYY-MM or MM-YYYY
+            lender = re.sub(r'[^A-Z0-9]', '', str(loan.get("lender_name") or "").upper())
+            # Use last 4 of lender to handle "HDFC BANK" vs "HDFC"
+            l_suffix = lender[-4:] if len(lender) >= 4 else lender
+            return f"{l_suffix}-{amt}-{bal}-{dt}"
+
+        final_active = []
+        active_keys = set()
+        for l in active_list:
+            fk = get_fuzzy_key(l)
+            if fk not in active_keys:
+                final_active.append(l)
+                active_keys.add(fk)
+        
+        data["active_loan_details"] = final_active
+        summary["active_loans"] = len(final_active)
         
         closed_list = data.get("closed_loan_details", [])
         if not isinstance(closed_list, list): closed_list = []
-        summary["closed_loans"] = len(closed_list)
+        final_closed = []
+        closed_keys = set()
+        for l in closed_list:
+            fk = get_fuzzy_key(l)
+            if fk not in closed_keys:
+                final_closed.append(l)
+                closed_keys.add(fk)
+        
+        data["closed_loan_details"] = final_closed
+        summary["closed_loans"] = len(final_closed)
             
-        summary["total_loans"] = (summary.get("active_loans") or 0) + (summary.get("closed_loans") or 0)
-        # --- ENHANCED: EXPERIAN-SPECIFIC REGEX FALLBACK ---
-        if summary.get("outstanding_amount") in ["0", "₹0", "None", "", None] or "Search for" in str(summary.get("outstanding_amount")):
-            sample = text[:100000]
-            exp_match = re.search(r"Total Current Bal\.?\s*amt(?::|\s+)\s*([\d,.]+)", sample, re.I)
-            if not exp_match:
-                exp_match = re.search(r"Total Current Balance(?::|\s+)\s*([\d,.]+)", sample, re.I)
-            
-            if exp_match:
-                extracted_total = exp_match.group(1)
-                log_to_file(f"Regex found Experian total: {extracted_total}")
-                summary["outstanding_amount"] = f"₹{extracted_total}"
+        summary["total_loans"] = summary["active_loans"] + summary["closed_loans"]
 
         # Debug Logging for Large Reports
         try:
