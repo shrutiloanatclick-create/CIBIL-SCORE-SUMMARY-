@@ -221,7 +221,7 @@ def summarize_cibil_report(text: str) -> dict:
         
         if account_idx != -1:
             # We have at least the account marker
-            head = text[:50000]
+            head = text[:100000]
             
             # If we have an enquiry marker later, keep text between them
             if enquiry_idx != -1 and enquiry_idx > account_idx:
@@ -281,7 +281,8 @@ def summarize_cibil_report(text: str) -> dict:
         "summary": {{ 
             "name": "", "dob": "", "date_reported": "", "mobile": "", "city": "", "state": "", "company": null, "address": "",
             "cibil_score": 0, "active_loans": 0, "closed_loans": 0, "total_loans": 0,
-            "outstanding_amount": "₹0 (sum of active)", "enquiries_30d": 0, "enquiries_90d": 0, "total_enquiries": 0 
+            "outstanding_amount": "Total outstanding. Look for 'Total Current Balance' or 'Account Summary' table.", 
+            "enquiries_30d": 0, "enquiries_90d": 0, "total_enquiries": 0 
         }},
         "active_loan_details": [{{ ...above fields... }}],
         "closed_loan_details": [{{ ...above fields... }}],
@@ -480,16 +481,20 @@ def summarize_cibil_report(text: str) -> dict:
         total_balance = 0
         for loan in active_list:
             if isinstance(loan, dict):
-                bal = safe_int(loan.get("outstanding_balance") or loan.get("current_balance"))
+                # Try multiple field names commonly used for balance
+                bal_str = loan.get("outstanding_balance") or loan.get("current_balance") or loan.get("outstanding_amount") or "0"
+                bal = safe_int(bal_str)
                 total_balance += bal
         
-        # Format as Indian Currency for display
-        if total_balance >= 100000:
-            summary["outstanding_amount"] = f"₹{total_balance / 100000:.2f}L"
-        elif total_balance >= 1000:
-            summary["outstanding_amount"] = f"₹{total_balance / 1000:.1f}k"
-        else:
-            summary["outstanding_amount"] = f"₹{total_balance}"
+        # Only override if we actually found non-zero balances in the detailed list
+        # If total_balance is 0, the LLM might have extracted the total from a summary table instead.
+        if total_balance > 0:
+            if total_balance >= 100000:
+                summary["outstanding_amount"] = f"₹{total_balance / 100000:.2f}L"
+            elif total_balance >= 1000:
+                summary["outstanding_amount"] = f"₹{total_balance / 1000:.1f}k"
+            else:
+                summary["outstanding_amount"] = f"₹{total_balance}"
         # --- End Summation ---
         
         # --- 3. RISK ASSESSMENT (Now uses corrected counts/buckets) ---
