@@ -34,17 +34,20 @@ def safe_int(val, default=0):
     """Safely convert a value to an integer, handling None, empty strings, and formatted numbers."""
     if val is None:
         return default
+    
+    if isinstance(val, (int, float)):
+        return int(val)
+
     s_val = str(val).strip().upper()
     if s_val in ["NIL", "NA", "ZERO", "NONE", "", "*"]:
         return 0
+    
     try:
-        # Remove commas, currency symbols, and spaces
-        s_val = s_val.replace(',', '').replace('₹', '').replace('RS', '').strip()
-        # Extract the first sequence of digits
-        match = re.search(r'(\d+)', s_val)
-        if match:
-            return int(match.group(1))
-        return default
+        # More robust numeric extraction: keep only digits and decimal points
+        cleaned = re.sub(r'[^\d.]', '', s_val)
+        if not cleaned:
+            return default
+        return int(float(cleaned))
     except (ValueError, TypeError):
         return default
 
@@ -281,7 +284,7 @@ def summarize_cibil_report(text: str) -> dict:
         "summary": {{ 
             "name": "", "dob": "", "date_reported": "", "mobile": "", "city": "", "state": "", "company": null, "address": "",
             "cibil_score": 0, "active_loans": 0, "closed_loans": 0, "total_loans": 0,
-            "outstanding_amount": "Total outstanding. Look for 'Total Current Balance' or 'Account Summary' table.", 
+            "outstanding_amount": "Total outstanding. Search for 'Total Current Bal. amt', 'Total Current Balance', or 'Account Summary' / 'SUMMARY OF ACCOUNTS' table. Do not return ₹0 if a total is present.", 
             "enquiries_30d": 0, "enquiries_90d": 0, "total_enquiries": 0 
         }},
         "active_loan_details": [{{ ...above fields... }}],
@@ -476,48 +479,64 @@ def summarize_cibil_report(text: str) -> dict:
         summary["closed_loans"] = len(closed_list)
             
         summary["total_loans"] = (summary.get("active_loans") or 0) + (summary.get("closed_loans") or 0)
-        
-        # --- NEW: DETERMINISTIC OUTSTANDING BALANCE SUMMATION ---
+        # --- ENHANCED: EXPERIAN-SPECIFIC REGEX FALLBACK ---
+        if summary.get("outstanding_amount") in ["0", "₹0", "None", "", None] or "Search for" in str(summary.get("outstanding_amount")):
+            sample = text[:100000]
+            exp_match = re.search(r"Total Current Bal\.?\s*amt(?::|\s+)\s*([\d,.]+)", sample, re.I)
+            if not exp_match:
+                exp_match = re.search(r"Total Current Balance(?::|\s+)\s*([\d,.]+)", sample, re.I)
+            
+            if exp_match:
+                extracted_total = exp_match.group(1)
+                log_to_file(f"Regex found Experian total: {extracted_total}")
+                summary["outstanding_amount"] = f"₹{extracted_total}"
+
+        # Debug Logging for Large Reports
+        try:
+            abs_workspace_root = r"c:\Users\dell\Downloads\CIBIL-SUMMARY-\CIBIL-SUMMARY-"
+            debug_log_path = os.path.join(abs_workspace_root, "backend", "debug_last_extraction.txt")
+            with open(debug_log_path, "w", encoding="utf-8") as f:
+                f.write(text[:10000])
+        except Exception as de:
+            log_to_file(f"Debug log write failed: {de}")
+
+        # --- DETERMINISTIC RECONCILIATION ---
         total_balance = 0
+        active_list = data.get("active_loan_details") or []
         for loan in active_list:
             if isinstance(loan, dict):
-                # Try multiple field names commonly used for balance
                 bal_str = loan.get("outstanding_balance") or loan.get("current_balance") or loan.get("outstanding_amount") or "0"
                 bal = safe_int(bal_str)
                 total_balance += bal
         
-        # Only override if we actually found non-zero balances in the detailed list
-        # If total_balance is 0, the LLM might have extracted the total from a summary table instead.
+        current_summary_val = safe_int(summary.get("outstanding_amount"))
         if total_balance > 0:
-            if total_balance >= 100000:
-                summary["outstanding_amount"] = f"₹{total_balance / 100000:.2f}L"
-            elif total_balance >= 1000:
-                summary["outstanding_amount"] = f"₹{total_balance / 1000:.1f}k"
-            else:
-                summary["outstanding_amount"] = f"₹{total_balance}"
-        # --- End Summation ---
+            # Prefer the summary-table value if it's already significantly set
+            # Otherwise, use the calculated sum if it's larger (suggesting list is more complete)
+            if current_summary_val == 0 or total_balance > current_summary_val:
+                if total_balance >= 100000:
+                    summary["outstanding_amount"] = f"₹{total_balance / 100000:.2f}L"
+                elif total_balance >= 1000:
+                    summary["outstanding_amount"] = f"₹{total_balance / 1000:.1f}k"
+                else:
+                    summary["outstanding_amount"] = f"₹{total_balance}"
         
-        # --- 3. RISK ASSESSMENT (Now uses corrected counts/buckets) ---
+        # --- 3. RISK ASSESSMENT ---
         risk_level, risk_reasons, delinquency_details = calculate_deterministic_risk(data)
         data["risk_level"] = risk_level
         data["risk_reasons"] = risk_reasons
         data["delinquency_details"] = delinquency_details
 
-        # Ensure all required keys exist to prevent frontend errors
         if "loan_history" not in data:
             data["loan_history"] = {"personal_loans":[], "credit_cards":[], "home_loans":[], "gold_loans":[], "overdrafts":[]}
         
         data["summary"] = summary
-        # --- End Consistency ---
-        
-        log_to_file(f"Extraction complete for: {summary.get('name')}. Active Count: {summary.get('active_loans')}")
-
-             
+        log_to_file(f"Extraction complete for: {summary.get('name')}. Exposure: {summary.get('outstanding_amount')}")
         return data
 
     except json.JSONDecodeError as je:
-        print(f"JSON Parsing Error: {je} - Output was: {result_content}")
-        return {"error": "Failed to parse model output as JSON."}
+        print(f"JSON Parsing Error: {je}")
+        return {"error": f"Failed to parse model output as JSON: {str(je)}"}
     except Exception as e:
         print(f"LLM Error: {e}")
         return {"error": str(e)}
