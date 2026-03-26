@@ -533,9 +533,11 @@ export default function CreditSummary({ data, riskLevel, getRiskClass, onNext })
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
                         {Object.entries(categoryBreakdown).map(([cat, info], idx) => {
+                            const catOutstandingTotal = info.items.reduce((s, l) => {
                                 const valStr = String(l.outstanding_balance || '0').replace(/[^0-9.]/g, '');
                                 const v = Math.round(parseFloat(valStr) || 0);
                                 return s + v;
+                            }, 0);
                             
                             if (info.count === 0) return null;
 
