@@ -317,59 +317,84 @@ def summarize_cibil_report(text: str) -> dict:
         chunk_size = 40000
         overlap = 20000
         
+        chunks = []
         for start in range(0, len(account_block), chunk_size - overlap):
-            chunk = account_block[start:start + chunk_size]
-            log_to_file(f"Processing account chunk: {start} to {start + len(chunk)}")
-            result = extract_loans_from_chunk(chunk)
+            chunks.append(account_block[start:start + chunk_size])
+        
+        log_to_file(f"Parallelizing {len(chunks)} account chunks...")
+        
+        from concurrent.futures import ThreadPoolExecutor
+        import time
+        
+        start_time = time.time()
+        
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 10)) as executor:
+            chunk_results = list(executor.map(extract_loans_from_chunk, chunks))
+        
+        end_time = time.time()
+        log_to_file(f"Parallel chunk extraction complete in {end_time - start_time:.2f} seconds.")
+        
+        # Robust ID: Mask-resilient and Normalization-aware
+        def get_loan_id(loan):
+            if not isinstance(loan, dict): return "invalid"
+            # NORMALIZE LENDER: Remove spaces, non-alphanumeric, and common noise
+            lender_raw = str(loan.get('lender_name', '')).strip().upper()
+            lender = re.sub(r'[^A-Z0-9]', '', lender_raw).replace('BANK', '').replace('NBFC', '')
             
-            # Robust ID: Mask-resilient and Normalization-aware
-            def get_loan_id(loan):
-                if not isinstance(loan, dict): return "invalid"
-                # NORMALIZE LENDER: Remove spaces, non-alphanumeric, and common noise
-                lender_raw = str(loan.get('lender_name', '')).strip().upper()
-                lender = re.sub(r'[^A-Z0-9]', '', lender_raw).replace('BANK', '').replace('NBFC', '')
-                
-                # Use only last 4 digits of account to handle varying mask patterns
-                acc_raw = str(loan.get('account_no', '')).strip()
-                acc_suffix = acc_raw[-4:] if len(acc_raw) >= 4 else acc_raw
-                
-                # NORMALIZE DATE: Key for deduplication across chunks
-                date_raw = str(loan.get('loan_start_date', '')).strip()
-                parsed_date = parse_date(date_raw)
-                date_key = parsed_date.strftime('%Y%m') if parsed_date else date_raw.upper()
-                
-                lid = f"{lender}-{acc_suffix}-"
-                lid += f"{safe_int(loan.get('loan_amount', 0))}-"
-                lid += f"{safe_int(loan.get('outstanding_balance', 0))}-"
-                lid += f"{date_key}"
-                return lid
+            # Use only last 4 digits of account to handle varying mask patterns
+            acc_raw = str(loan.get('account_no', '')).strip()
+            acc_suffix = acc_raw[-4:] if len(acc_raw) >= 4 else acc_raw
             
-            seen_ids = set()
-            unique_active = []
-            for l in all_active_loans:
-                lid = get_loan_id(l)
-                if lid not in seen_ids:
-                    # Double-check status (sometimes Model mis-categorizes)
-                    if not (l.get("date_closed") or "closed" in str(l).lower() or "settled" in str(l).lower()):
-                        unique_active.append(l)
-                        seen_ids.add(lid)
-                    else:
-                        all_closed_loans.append(l)
+            # NORMALIZE DATE: Key for deduplication across chunks
+            date_raw = str(loan.get('loan_start_date', '')).strip()
+            parsed_date = parse_date(date_raw)
+            date_key = parsed_date.strftime('%Y%m') if parsed_date else date_raw.upper()
             
-            seen_closed_ids = set()
-            unique_closed = []
-            for l in all_closed_loans:
-                lid = get_loan_id(l)
-                if lid not in seen_closed_ids:
-                    unique_closed.append(l)
-                    seen_closed_ids.add(lid)
+            lid = f"{lender}-{acc_suffix}-"
+            lid += f"{safe_int(loan.get('loan_amount', 0))}-"
+            lid += f"{safe_int(loan.get('outstanding_balance', 0))}-"
+            lid += f"{date_key}"
+            return lid
 
-            all_active_loans = unique_active
-            all_closed_loans = unique_closed
+        # Merge results from all chunks
+        for result in chunk_results:
+            batch_active = result.get("active_loan_details", [])
+            batch_closed = result.get("closed_loan_details", [])
             
-            if len(all_active_loans) + len(all_closed_loans) > 500: # Increased cap for massive reports
-                log_to_file("Safety cap: Reached 500 loans, stopping chunked extraction.")
-                break
+            if not isinstance(batch_active, list): batch_active = []
+            if not isinstance(batch_closed, list): batch_closed = []
+            
+            all_active_loans.extend(batch_active)
+            all_closed_loans.extend(batch_closed)
+
+        # Unified Deduplication
+        seen_ids = set()
+        unique_active = []
+        unique_closed = []
+        
+        # First pass for active
+        for l in all_active_loans:
+            lid = get_loan_id(l)
+            if lid not in seen_ids:
+                # Double-check status (sometimes Model mis-categorizes)
+                if not (l.get("date_closed") or "closed" in str(l).lower() or "settled" in str(l).lower()):
+                    unique_active.append(l)
+                    seen_ids.add(lid)
+                else:
+                    all_closed_loans.append(l) # Move to potentially closed if mis-categorized
+        
+        # Second pass for closed
+        seen_closed_ids = set()
+        for l in all_closed_loans:
+            lid = get_loan_id(l)
+            if lid not in seen_closed_ids:
+                unique_closed.append(l)
+                seen_closed_ids.add(lid)
+
+        all_active_loans = unique_active
+        all_closed_loans = unique_closed
+        
+        log_to_file(f"Final Deduplicated Counts -> Active: {len(all_active_loans)}, Closed: {len(all_closed_loans)}")
 
     # 2. Main Prompt for Summary Data (Using first 100k + tail 50k)
     # We include a subset of account info just for the summary totals if they are there

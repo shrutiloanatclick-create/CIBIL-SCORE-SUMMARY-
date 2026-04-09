@@ -50,14 +50,23 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
             # We take from account_start up to the end (or enquiry if it's after)
             end_pg = enquiry_start_pg if (enquiry_start_pg > account_start_pg) else total_pages
             
-            print(f"DEBUG: Precisely extracting pages {account_start_pg + 1} to {end_pg} for accounts...")
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                for pg_idx in range(account_start_pg, end_pg):
-                    if pg_idx >= len(pdf.pages): break
-                    pg = pdf.pages[pg_idx]
-                    # Extract with layout=True for columnar alignment
-                    account_block_text += pg.extract_text(layout=True) or ""
-                    account_block_text += "\n--- PAGE BREAK ---\n"
+            print(f"DEBUG: Precisely extracting pages {account_start_pg + 1} to {end_pg} for accounts in parallel...")
+            
+            from concurrent.futures import ThreadPoolExecutor
+            
+            def extract_page_text(pg_idx, pdf_bytes):
+                with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                    if pg_idx < len(pdf.pages):
+                        return pdf.pages[pg_idx].extract_text(layout=True) or ""
+                    return ""
+
+            pages_to_extract = range(account_start_pg, end_pg)
+            with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
+                # We need to pass pdf_bytes to each worker because pdfplumber objects aren't easily pickled/shared across threads in some contexts
+                results = list(executor.map(lambda idx: extract_page_text(idx, pdf_bytes), pages_to_extract))
+            
+            for text in results:
+                account_block_text += text + "\n--- PAGE BREAK ---\n"
         else:
             print("DEBUG: No account marker found, using fast fitz fallback for all pages.")
             for i in range(total_pages):
