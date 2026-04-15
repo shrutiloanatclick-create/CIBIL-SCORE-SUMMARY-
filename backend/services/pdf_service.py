@@ -1,105 +1,89 @@
-import fitz  # PyMuPDF
-import pdfplumber
-import io
-import re
+import httpx
 import os
+import asyncio
+import io
 
-def clean_text(text: str) -> str:
-    """Preprocess extracted text: keep structure by preserving leading indentation."""
-    text = text.replace('\t', '    ')
-    lines = [line.rstrip() for line in text.split('\n')]
-    return '\n'.join(lines)
+async def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    """Extract text using LlamaParse REST API directly to avoid SDK compatibility issues."""
+    api_key = os.getenv("LLAMA_CLOUD_API_KEY")
+    if not api_key:
+        print("ERROR: LLAMA_CLOUD_API_KEY not found in environment")
+        return ""
 
-def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    """Extract text surgically: PyMuPDF for speed/discovery, pdfplumber for high-precision account tables."""
+    base_url = "https://api.cloud.llamaindex.ai/api/v1"
+    headers = {"Authorization": f"Bearer {api_key}"}
+
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        
-        if doc.is_encrypted:
-            doc.close()
-            raise ValueError("The PDF is password protected. Please provide a decrypted version.")
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # 1. Upload File to Start Parsing
+            print("DEBUG: Uploading PDF to LlamaParse API...")
+            files = {'file': ('report.pdf', pdf_bytes, 'application/pdf')}
+            # result_type="markdown" is standard for best table handling
+            payload = {'result_type': 'markdown'} 
             
-        total_pages = len(doc)
-        print(f"DEBUG: fitz opened PDF with {total_pages} pages")
-        
-        # 1. Page Discovery: Find where the massive Account section is
-        account_start_pg = -1
-        enquiry_start_pg = -1
-        
-        for i in range(total_pages):
-            p_text = doc[i].get_text().upper()
-            account_markers = ["ACCOUNT DETAILS", "TRADE LINE", "ACCOUNT INFORMATION", "DETAILS OF ACCOUNTS", "TRADELINE", "ACCOUNT SUMMARY", "CREDIT FACILITIES"]
-            if account_start_pg == -1 and any(m in p_text for m in account_markers):
-                account_start_pg = i
-            enquiry_markers = ["ENQUIRY INFORMATION", "ENQUIRIES", "CREDIT ENQUIRIES", "ENQUIRY DETAILS", "ENQUIRY SUMMARY"]
-            if enquiry_start_pg == -1 and any(m in p_text for m in enquiry_markers):
-                enquiry_start_pg = i
-        
-        print(f"DEBUG: Discovery Result -> Account Start: Pg {account_start_pg + 1}, Enquiry Start: Pg {enquiry_start_pg + 1}")
-        
-        # 2. Extract Header (from start up to account_start_pg) with fitz (fast)
-        head_text = ""
-        header_end = account_start_pg if account_start_pg != -1 else min(total_pages, 5)
-        for i in range(header_end):
-            head_text += doc[i].get_text() + "\n"
+            response = await client.post(f"{base_url}/parsing/upload", headers=headers, files=files, data=payload)
             
-        # 3. Extract Detailed Account Section with pdfplumber (precise layout)
-        account_block_text = ""
-        end_pg = total_pages
-        if account_start_pg != -1:
-            # We take from account_start up to the end (or enquiry if it's after)
-            end_pg = enquiry_start_pg if (enquiry_start_pg > account_start_pg) else total_pages
+            if response.status_code != 200:
+                print(f"LlamaParse Upload Failed ({response.status_code}): {response.text}")
+                return ""
             
-            print(f"DEBUG: Precisely extracting pages {account_start_pg + 1} to {end_pg} for accounts in parallel...")
-            
-            from concurrent.futures import ThreadPoolExecutor
-            
-            def extract_page_text(pg_idx, pdf_bytes):
-                with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                    if pg_idx < len(pdf.pages):
-                        return pdf.pages[pg_idx].extract_text(layout=True) or ""
+            job_id = response.json().get("id")
+            if not job_id:
+                print("LlamaParse failed to return a Job ID")
+                return ""
+
+            # 2. Poll for Completion
+            print(f"DEBUG: Job started (ID: {job_id}). Polling for results...")
+            max_retries = 60 # 2 minutes max
+            for i in range(max_retries):
+                await asyncio.sleep(2)
+                
+                status_resp = await client.get(f"{base_url}/parsing/job/{job_id}", headers=headers)
+                if status_resp.status_code != 200:
+                    continue
+                    
+                job_data = status_resp.json()
+                status = job_data.get("status")
+                
+                if status == "SUCCESS":
+                    print("DEBUG: LlamaParse Job SUCCESS.")
+                    break
+                elif status in ["FAILED", "CANCELLED"]:
+                    print(f"LlamaParse Job {status}: {job_data.get('error', 'Unknown Error')}")
                     return ""
+                
+                if i % 5 == 0:
+                    print(f"DEBUG: Polling... (Status: {status})")
+            else:
+                print("LlamaParse Polling Timed Out")
+                return ""
 
-            pages_to_extract = range(account_start_pg, end_pg)
-            with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
-                # We need to pass pdf_bytes to each worker because pdfplumber objects aren't easily pickled/shared across threads in some contexts
-                results = list(executor.map(lambda idx: extract_page_text(idx, pdf_bytes), pages_to_extract))
+            # 3. Retrieve Final Markdown
+            print("DEBUG: Fetching results...")
+            result_resp = await client.get(f"{base_url}/parsing/job/{job_id}/result/markdown", headers=headers)
             
-            for text in results:
-                account_block_text += text + "\n--- PAGE BREAK ---\n"
-        else:
-            print("DEBUG: No account marker found, using fast fitz fallback for all pages.")
-            for i in range(total_pages):
-                account_block_text += doc[i].get_text() + "\n"
-            end_pg = total_pages
-
-        # 4. Extract Everything Else (Enquiries, Remainder) from end_pg onwards
-        remainder_text = ""
-        if end_pg < total_pages:
-            print(f"DEBUG: Extracting remaining pages {end_pg + 1} to {total_pages} with fitz...")
-            for i in range(end_pg, total_pages):
-                remainder_text += doc[i].get_text() + "\n"
-
-        doc.close()
-        
-        # Assemble full text
-        full_text = head_text + "\n[[ACCOUNT_SECTION_START]]\n" + account_block_text + "\n[[ACCOUNT_SECTION_END]]\n" + remainder_text
-        
-        # Validation
-        if len(full_text.strip()) < 100:
-            return "ERROR: EMPTY_EXTRACTION"
-
-        final_text = clean_text(full_text)
-        
-        # Log a large sample for debugging
-        try:
-            debug_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "debug_last_extraction.txt")
-            with open(debug_path, "w", encoding="utf-8") as f:
-                f.write(final_text[:50000] + "\n... [TRUNCATED] ...\n")
-        except: pass
-        
-        return final_text
+            if result_resp.status_code != 200:
+                print(f"Failed to fetch result: {result_resp.text}")
+                return ""
+                
+            data = result_resp.json()
+            full_text = data.get("markdown", "")
+            
+            if not full_text:
+                # Sometimes the structure is different, check for 'text' or other fields
+                full_text = data.get("text", "")
+            
+            # Log snippet for debugging
+            try:
+                debug_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "debug_last_extraction.txt")
+                with open(debug_path, "w", encoding="utf-8") as f:
+                    f.write(full_text[:50000])
+            except: pass
+            
+            return full_text
 
     except Exception as e:
-        print(f"Error in extract_text_from_pdf: {e}")
+        print(f"Critical error in LlamaParse integration: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return ""

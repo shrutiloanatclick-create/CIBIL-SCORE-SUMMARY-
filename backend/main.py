@@ -49,7 +49,7 @@ async def upload_cibil_report(file: UploadFile = File(...)):
         
         try:
             print("DEBUG: Starting PDF text extraction...")
-            extracted_text = extract_text_from_pdf(content)
+            extracted_text = await extract_text_from_pdf(content)
             print(f"DEBUG: Extraction complete. Length: {len(extracted_text)} chars")
         except Exception as e:
              print(f"DEBUG: Extraction failed: {str(e)}")
