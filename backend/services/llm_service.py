@@ -284,20 +284,17 @@ def summarize_cibil_report(text: str) -> dict:
     """
     original_text = text # Keep for regex fallbacks
     
-    # 1. Identify Account section start (if markers exist)
-    custom_start = text.find("[[ACCOUNT_SECTION_START]]")
-    custom_end = text.find("[[ACCOUNT_SECTION_END]]")
-    
-    # 2. Chunking Logic for Large Reports
+    # 1. Chunking Logic for Large Reports
     all_active_loans = []
     all_closed_loans = []
     
-    # If the report is large (>80k chars) or markers are present, chunk it.
-    if len(text) > 80000 or custom_start != -1:
+    # If the report is large (>80k chars), chunk the ENTIRE text.
+    # This ensures 100% coverage of the middle pages where loans live.
+    if len(text) > 80000:
         log_to_file(f"Large report ({len(text)} chars). Starting full-stream chunked extraction.")
         
-        # Focus on the account section if markers were found, otherwise use full text
-        account_block = text[custom_start:] if custom_start != -1 else text
+        # Use the whole text for chunking to ensure no pages are missed
+        account_block = text
         
         # 40k chunks with 20k overlap to ensure no loan is split across chunks
         chunk_size = 40000
