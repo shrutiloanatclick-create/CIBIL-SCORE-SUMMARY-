@@ -14,25 +14,47 @@ import fitz  # PyMuPDF
 def _detect_pdf_type(raw_text: str) -> str:
     """
     Detect which kind of CIBIL PDF we're dealing with.
-    Returns: 'quadruplication' | 'web_printed' | 'native'
+    Returns: 'quadruplication' | 'web_printed' | 'spaced_out' | 'native'
     """
-    sample = raw_text[:2000]
+    if not raw_text:
+        return "native"
+        
+    sample = raw_text[:5000]
 
     # Count runs of 4 identical chars (e.g. CCCC IIII BBBB IIII LLLL)
     quad_matches = len(re.findall(r'(.)\1{3}', sample))
-    if quad_matches > 15:
+    spaced_quad_matches = len(re.findall(r'(.) \1 \1 \1', sample))
+    
+    if quad_matches > 15 or spaced_quad_matches > 15:
         return "quadruplication"
 
+    # Detect spaced out text: "S u m m a r y"
+    # Look for sequences of "Char Space Char Space Char Space"
+    spaced_out_matches = len(re.findall(r'(?:[A-Za-z] ){3,}', sample))
+    if spaced_out_matches > 20:
+        return "spaced_out"
+
     # Check for browser print header artifacts
-    if "myscore.cibil.com" in sample or "Score Report | Cibil Dashboard" in sample:
+    if any(kw in sample for kw in ["myscore.cibil.com", "Score Report | Cibil Dashboard", "printed from"]):
         return "web_printed"
 
     return "native"
 
 
 def _fix_quadruplication(text: str) -> str:
-    """Fix fonts that render each character 4x: CCCC→C, 1111→1"""
-    return re.sub(r'(.)\1{3}', r'\1', text)
+    """Fix fonts that render each character 4x: CCCC→C, 1111→1, or C C C C -> C"""
+    # Fix standard quadruplication (CCCC -> C)
+    text = re.sub(r'(.)\1{3}', r'\1', text)
+    # Fix spaced quadruplication (C C C C -> C)
+    text = re.sub(r'(.) \1 \1 \1', r'\1', text)
+    return text
+
+
+def _fix_spaced_out(text: str) -> str:
+    """Fix text with extra spaces between letters: 'S u m m a r y' -> 'Summary'"""
+    # Join single letters separated by space, but keep words separated by multiple spaces
+    # We look for A B C and turn it into ABC
+    return re.sub(r'([A-Za-z]) (?=[A-Za-z](?: |$))', r'\1', text)
 
 
 def _fix_web_printed(text: str) -> str:
@@ -96,6 +118,13 @@ def _extract_with_pdfplumber(pdf_bytes: bytes) -> str:
                         header = f"[[ACCOUNT_SECTION_END]]\n{header}"
                         found_enquiries = True
                     final_pages.append(f"{header}\n{text}")
+        elif pdf_type == "spaced_out":
+             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    text = page.extract_text(layout=True) or ""
+                    text = _fix_spaced_out(text)
+                    text = _common_cleanup(text)
+                    final_pages.append(f"--- Page {i + 1} ---\n{text}")
         else:
             # Native or Web Printed
             for i, text in enumerate(raw_pages_default):
