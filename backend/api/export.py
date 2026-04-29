@@ -11,12 +11,12 @@ from typing import Optional, List, Union
 router = APIRouter()
 
 class SummaryInfo(BaseModel):
-    name: Optional[str] = "N/A"
-    dob: Optional[str] = "N/A"
-    date_reported: Optional[str] = "N/A"
-    mobile: Optional[str] = "N/A"
-    company: Optional[str] = "N/A"
-    address: Optional[str] = "N/A"
+    name: Optional[str] = None
+    dob: Optional[str] = None
+    date_reported: Optional[str] = None
+    mobile: Optional[str] = None
+    company: Optional[str] = None
+    address: Optional[str] = None
     cibil_score: Union[int, str, None] = 0
     active_loans: Union[int, str, None] = 0
     closed_loans: Union[int, str, None] = 0
@@ -24,22 +24,22 @@ class SummaryInfo(BaseModel):
     total_enquiries: Union[int, str, None] = 0
 
 class LoanDetail(BaseModel):
-    lender_name: Optional[str] = "—"
-    loan_type: Optional[str] = "—"
-    loan_amount: Optional[str] = "—"
-    outstanding_balance: Optional[str] = "—"
-    emi: Optional[str] = "—"
-    loan_start_date: Optional[str] = "—"
-    account_no: Optional[str] = "—"
-    date_closed: Optional[str] = "—"
+    lender_name: Optional[str] = None
+    loan_type: Optional[str] = None
+    loan_amount: Optional[str] = None
+    outstanding_balance: Optional[str] = None
+    emi: Optional[str] = None
+    loan_start_date: Optional[str] = None
+    account_no: Optional[str] = None
+    date_closed: Optional[str] = None
     has_late_payments: Optional[bool] = False
-    status: Optional[str] = "—"
+    status: Optional[str] = None
 
 class EnquiryDetail(BaseModel):
-    lender: Optional[str] = "—"
-    date: Optional[str] = "—"
-    purpose: Optional[str] = "—"
-    amount: Optional[str] = "—"
+    lender: Optional[str] = None
+    date: Optional[str] = None
+    purpose: Optional[str] = None
+    amount: Optional[str] = None
 
 class CibilData(BaseModel):
     summary: Optional[SummaryInfo] = None
@@ -97,12 +97,12 @@ async def export_pdf(data: CibilData):
         y_position -= line_height
 
         details = [
-            ("CIBIL Score", str(summary.cibil_score)),
-            ("Account Holder", summary.name),
-            ("Report Date", summary.date_reported),
-            ("Active Loans", str(summary.active_loans)),
-            ("Outstanding", str(summary.outstanding_amount)),
-            ("Total Enquiries", str(summary.total_enquiries))
+            ("CIBIL Score", str(summary.cibil_score or 0)),
+            ("Account Holder", summary.name or "N/A"),
+            ("Report Date", summary.date_reported or "N/A"),
+            ("Active Loans", str(summary.active_loans or 0)),
+            ("Outstanding", str(summary.outstanding_amount or "₹0")),
+            ("Total Enquiries", str(summary.total_enquiries or 0))
         ]
 
         for label, val in details:
@@ -143,7 +143,13 @@ async def export_pdf(data: CibilData):
                     y_position = height - 50
                 
                 curr_x = 50
-                fields = [loan.lender_name, loan.loan_type, loan.loan_amount, loan.outstanding_balance, loan.emi]
+                fields = [
+                    loan.lender_name or "—", 
+                    loan.loan_type or "—", 
+                    loan.loan_amount or "—", 
+                    loan.outstanding_balance or "—", 
+                    loan.emi or "—"
+                ]
                 for i, f in enumerate(fields):
                     txt = str(f)[:25] if i == 0 else str(f)
                     c.drawString(curr_x, y_position, txt)
@@ -182,7 +188,13 @@ async def export_pdf(data: CibilData):
 
                 curr_x = 50
                 status_txt = "Delayed" if loan.has_late_payments else "Clean"
-                fields = [loan.lender_name, loan.account_no, loan.loan_type, loan.loan_amount, status_txt]
+                fields = [
+                    loan.lender_name or "—", 
+                    loan.account_no or "—", 
+                    loan.loan_type or "—", 
+                    loan.loan_amount or "—", 
+                    status_txt
+                ]
                 for i, f in enumerate(fields):
                     txt = str(f)[:25] if i == 0 else str(f)
                     c.drawString(curr_x, y_position, txt)
