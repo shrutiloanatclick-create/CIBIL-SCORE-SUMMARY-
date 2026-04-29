@@ -563,6 +563,21 @@ def summarize_cibil_report(text: str) -> dict:
                 if m:
                     summary["dob"] = m.group(1).strip().replace('/', '-').replace(' ', '-')
                     break
+        
+        # 2.5 SCORE Extraction Fallback
+        if is_bad(summary.get("cibil_score"), 0) or int(summary.get("cibil_score") or 0) < 300:
+            score_pats = [
+                r"Your CIBIL Score is\s*(\d{3})",
+                r"(?:CIBIL|EXPERIAN|Credit)\s*Score\s*[:\-]?\s*(\d{3})",
+                r"Score\s*[:\-]?\s*(\d{3})",
+                r"Score[:\s]+(\d{3})\s",
+                r"(\d{3})\s*/\s*900",
+            ]
+            for pat in score_pats:
+                m = re.search(pat, text, re.I)
+                if m:
+                    summary["cibil_score"] = int(m.group(1))
+                    break
 
         # 3. DATE REPORTED Extraction
         if is_bad(summary.get("date_reported"), "DD-MM-YYYY"):
