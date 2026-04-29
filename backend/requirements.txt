@@ -10,5 +10,3 @@ pandas
 openpyxl
 reportlab
 streamlit
-llama-parse
-nest-asyncio

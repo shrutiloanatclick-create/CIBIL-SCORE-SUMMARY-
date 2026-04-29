@@ -284,36 +284,20 @@ def summarize_cibil_report(text: str) -> dict:
     """
     original_text = text # Keep for regex fallbacks
     
-    # 1. Identify Account section start
-    # Try custom markers from pdf_service first
-    custom_start = text.find("[[ACCOUNT_SECTION_START]]")
-    custom_end = text.find("[[ACCOUNT_SECTION_END]]")
-    
-    if custom_start != -1 and custom_end != -1:
-        account_idx = custom_start + len("[[ACCOUNT_SECTION_START]]")
-        enquiry_idx = custom_end
-        log_to_file(f"Found custom markers: Account start at {account_idx}, End at {enquiry_idx}")
-    else:
-        # Fallback to regex
-        account_idx_match = re.search(r"(ACCOUNT INFORMATION|ACCOUNT SUMMARY|ACCOUNTS|TRADE LINES|ACCOUNT DETAILS|CREDIT SUMMARY|TRADELINE)", text, re.I)
-        account_idx = account_idx_match.start() if account_idx_match else -1
-        
-        enquiry_idx_match = re.search(r"(ENQUIRY INFORMATION|ENQUIRIES|CREDIT ENQUIRIES|ENQUIRY DETAILS)", text, re.I)
-        enquiry_idx = enquiry_idx_match.start() if enquiry_idx_match else -1
-    
+    # 1. Chunking Logic for Large Reports
     all_active_loans = []
     all_closed_loans = []
     
-    # If the report is large, chunk the account section
-    if (len(text) > 80000 or custom_start != -1) and account_idx != -1:
-        log_to_file(f"Large or Marked report detected. Starting ultra-granular extraction.")
+    # If the report is large (>80k chars), chunk the ENTIRE text.
+    # Fragile regex isolation often fails on reports with Table of Contents.
+    if len(text) > 80000 or custom_start != -1:
+        log_to_file(f"Large report ({len(text)} chars). Starting full-stream chunked extraction.")
         
-        # Define the account info block
-        account_block_end = enquiry_idx if (enquiry_idx > account_idx) else len(text)
-        account_block = text[account_idx:account_block_end]
+        # Use the whole text for chunking to ensure no pages are missed
+        # If markers exist, we still respect them for logging but don't limit the stream
+        account_block = text[custom_start:] if custom_start != -1 else text
         
-        # Process in smaller 40k chunks with 20k overlap to ensure JSON responses 
-        # stay within LLM token limits (preventing truncation/data loss)
+        # 40k chunks with 20k overlap to ensure no loan is split across chunks
         chunk_size = 40000
         overlap = 20000
         
@@ -321,7 +305,7 @@ def summarize_cibil_report(text: str) -> dict:
         for start in range(0, len(account_block), chunk_size - overlap):
             chunks.append(account_block[start:start + chunk_size])
         
-        log_to_file(f"Parallelizing {len(chunks)} account chunks...")
+        log_to_file(f"Parallelizing {len(chunks)} chunks covering the entire report...")
         
         from concurrent.futures import ThreadPoolExecutor
         import time
@@ -397,11 +381,11 @@ def summarize_cibil_report(text: str) -> dict:
         log_to_file(f"Final Deduplicated Counts -> Active: {len(all_active_loans)}, Closed: {len(all_closed_loans)}")
 
     # 2. Main Prompt for Summary Data (Using first 100k + tail 50k)
-    # We include a subset of account info just for the summary totals if they are there
+    # This captures Personal Info/Score (Head) and Enquiries (Tail) perfectly.
     head = text[:100000]
-    tail = text[-50000:] if enquiry_idx == -1 else text[enquiry_idx:enquiry_idx + 50000]
+    tail = text[-50000:] if len(text) > 150000 else ""
     
-    truncated_text = head + "\n... [CHUNKED LOANS PROCESSING] ...\n" + tail
+    truncated_text = head + "\n... [MIDDLE CONTENT OMITTED] ...\n" + tail
     
     prompt = f"""
     SYSTEM: Financial data extractor for Indian CIBIL and EXPERIAN reports. Extract data with zero hallucination. Numeric fields must be pure numbers.
