@@ -3,7 +3,7 @@ uvicorn
 python-multipart
 pydantic
 python-dotenv
-groq
+openai
 pdfplumber
 PyMuPDF
 pandas

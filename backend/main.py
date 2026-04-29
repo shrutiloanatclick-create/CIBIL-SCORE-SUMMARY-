@@ -55,9 +55,9 @@ async def upload_cibil_report(file: UploadFile = File(...)):
              print(f"DEBUG: Extraction failed: {str(e)}")
              raise HTTPException(status_code=400, detail=str(e))
              
-        if not extracted_text or len(extracted_text.strip()) < 20:
+        if not extracted_text or len(extracted_text.strip()) < 50:
              # Fallback to Vision Model for Scanned PDFs
-             print("DEBUG: Scanned/Empty PDF detected. Falling back to Groq Vision OCR...")
+             print("DEBUG: Scanned/Empty PDF detected. Falling back to Vision OCR...")
              summary_data = summarize_cibil_report_vision(content)
         else:
              # 2. Process with standard LLM

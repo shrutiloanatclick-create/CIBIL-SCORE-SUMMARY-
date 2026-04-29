@@ -3,15 +3,15 @@ import json
 import base64
 import re
 import fitz # PyMuPDF
-from groq import Groq
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv() # Load from current dir
 # Also try to load from root if started from backend/
 load_dotenv(dotenv_path=os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", ".env"))
 
-# Initialize Groq client
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def log_to_file(msg):
     try:
@@ -237,7 +237,7 @@ def extract_loans_from_chunk(chunk_text: str) -> dict:
     """
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.1,
@@ -465,9 +465,9 @@ def summarize_cibil_report(text: str) -> dict:
     """ + truncated_text + "\n"
 
     try:
-        log_to_file(f"Starting Groq call. Text length: {len(text)}")
+        log_to_file(f"Starting OpenAI call. Text length: {len(text)}")
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that strictly outputs JSON. Your output must be a single valid JSON object following the requested schema."},
                 {"role": "user", "content": prompt}
@@ -475,11 +475,11 @@ def summarize_cibil_report(text: str) -> dict:
             response_format={"type": "json_object"},
             temperature=0.1,
             max_tokens=8000, # Further increased for massive reports (100+ loans)
-            timeout=180, # Increased for huge input and 70b model
+            timeout=180, # Increased for huge input
         )
         
         result_content = response.choices[0].message.content.strip()
-        log_to_file(f"Groq response received. Raw length: {len(result_content)}")
+        log_to_file(f"OpenAI response received. Raw length: {len(result_content)}")
         
         # Attempt to parse JSON with extraction fallback
         try:
@@ -789,7 +789,7 @@ def summarize_cibil_report_vision(pdf_bytes: bytes) -> dict:
         content_list = [{"type": "text", "text": prompt_text}] + images_content
         
         response = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "user", "content": content_list}
             ],
@@ -944,7 +944,7 @@ def ask_cibil_question(context: str, question: str) -> dict:
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful financial assistant. Be precise."},
                 {"role": "user", "content": prompt}
