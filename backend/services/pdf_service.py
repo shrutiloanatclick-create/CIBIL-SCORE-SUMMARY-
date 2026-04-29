@@ -19,13 +19,12 @@ def _detect_pdf_type(raw_text: str) -> str:
     sample = raw_text[:2000]
 
     # Count runs of 4 identical chars (e.g. CCCC IIII BBBB IIII LLLL)
-    # Common in some CIBIL dashboard PDFs where font characters are stacked
     quad_matches = len(re.findall(r'(.)\1{3}', sample))
     if quad_matches > 15:
         return "quadruplication"
 
     # Check for browser print header artifacts
-    if "myscore.cibil.com" in sample or "Score Report | Cibil Dashboard" in sample or "https://" in sample:
+    if "myscore.cibil.com" in sample or "Score Report | Cibil Dashboard" in sample:
         return "web_printed"
 
     return "native"
@@ -38,13 +37,9 @@ def _fix_quadruplication(text: str) -> str:
 
 def _fix_web_printed(text: str) -> str:
     """Remove browser print artifacts: URLs, timestamps, page-number lines"""
-    # Remove URLs
     text = re.sub(r'https?://\S+', '', text)
-    # Remove Timestamps (e.g. 12/05/2023, 11:30 AM)
     text = re.sub(r'\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}\s*[AP]M', '', text)
-    # Remove Header titles
     text = re.sub(r'Score Report\s*\|\s*Cibil Dashboard', '', text, flags=re.I)
-    # Remove standalone page numbers
     text = re.sub(r'^\s*\d+/\d+\s*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\s*\d+\s*$', '', text, flags=re.MULTILINE)
     return text
@@ -60,48 +55,64 @@ def _common_cleanup(text: str) -> str:
 
 def _extract_with_pdfplumber(pdf_bytes: bytes) -> str:
     """
-    Extract and standardize text using pdfplumber with table-layout awareness.
+    Extract and standardize text using pdfplumber.
+    Two-pass approach: fast detection, then high-accuracy layout extraction for quad-font PDFs.
     """
     try:
-        pages_text = []
+        raw_pages_default = []
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                raw_pages_default.append(page.extract_text() or "")
+
+        raw_full_default = "\n".join(raw_pages_default)
+        if not raw_full_default.strip():
+            return ""
+
+        pdf_type = _detect_pdf_type(raw_pages_default[0] if raw_pages_default else raw_full_default)
+        print(f"DEBUG: pdfplumber detected PDF type: '{pdf_type}'")
+
+        account_keywords = ["ACCOUNT INFORMATION", "ACCOUNT SUMMARY", "ACCOUNTS", "TRADE LINES"]
+        enquiry_keywords = ["ENQUIRY INFORMATION", "ENQUIRIES", "CREDIT ENQUIRIES"]
         found_accounts = False
         found_enquiries = False
         
-        account_keywords = ["ACCOUNT INFORMATION", "ACCOUNT SUMMARY", "ACCOUNTS", "TRADE LINES", "TRADE LINE"]
-        enquiry_keywords = ["ENQUIRY INFORMATION", "ENQUIRIES", "CREDIT ENQUIRIES", "RECENT ENQUIRIES"]
+        final_pages = []
 
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for i, page in enumerate(pdf.pages):
-                # layout=True is essential for maintaining columns in account tables
-                text = page.extract_text(layout=True) or ""
-                
-                if not text.strip():
-                    continue
-
-                # Auto-detect and fix the PDF type per page (in case of mixed types)
-                pdf_type = _detect_pdf_type(text)
-                
-                if pdf_type == "quadruplication":
+        if pdf_type == "quadruplication":
+            # RE-EXTRACT WITH LAYOUT=TRUE: Essential for quadruplicated fonts
+            # This preserves spatial alignment so field values aren't orphaned from their labels.
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    text = page.extract_text(layout=True) or ""
                     text = _fix_quadruplication(text)
                     text = _fix_web_printed(text)
-                elif pdf_type == "web_printed":
+                    text = _common_cleanup(text)
+                    
+                    header = f"--- Page {i + 1} ---"
+                    if not found_accounts and i > 0 and any(k in text.upper() for k in account_keywords):
+                        header = f"[[ACCOUNT_SECTION_START]]\n{header}"
+                        found_accounts = True
+                    if not found_enquiries and i > 5 and any(k in text.upper() for k in enquiry_keywords):
+                        header = f"[[ACCOUNT_SECTION_END]]\n{header}"
+                        found_enquiries = True
+                    final_pages.append(f"{header}\n{text}")
+        else:
+            # Native or Web Printed
+            for i, text in enumerate(raw_pages_default):
+                if pdf_type == "web_printed":
                     text = _fix_web_printed(text)
-                
                 text = _common_cleanup(text)
                 
                 header = f"--- Page {i + 1} ---"
-                # Insert markers for the LLM chunking service
                 if not found_accounts and i > 0 and any(k in text.upper() for k in account_keywords):
                     header = f"[[ACCOUNT_SECTION_START]]\n{header}"
                     found_accounts = True
-                
                 if not found_enquiries and i > 5 and any(k in text.upper() for k in enquiry_keywords):
                     header = f"[[ACCOUNT_SECTION_END]]\n{header}"
                     found_enquiries = True
-                    
-                pages_text.append(f"{header}\n{text}")
+                final_pages.append(f"{header}\n{text}")
 
-        return "\n\n".join(pages_text)
+        return "\n\n".join(final_pages)
 
     except Exception as e:
         print(f"DEBUG: pdfplumber extraction failed: {e}")
@@ -151,11 +162,10 @@ async def _extract_with_llamaparse(pdf_bytes: bytes) -> str:
     """
     Cloud OCR via LlamaParse REST API.
     Used only when local extraction returns < 20 chars.
-    Using direct httpx instead of library to avoid Pydantic conflicts.
     """
     api_key = os.getenv("LLAMA_CLOUD_API_KEY")
     if not api_key:
-        print("ERROR: LLAMA_CLOUD_API_KEY not found — cannot use LlamaParse")
+        print("ERROR: LLAMA_CLOUD_API_KEY not found")
         return ""
 
     base_url = "https://api.cloud.llamaindex.ai/api/v1"
@@ -172,14 +182,14 @@ async def _extract_with_llamaparse(pdf_bytes: bytes) -> str:
             )
 
             if response.status_code != 200:
-                print(f"LlamaParse Upload Failed ({response.status_code}): {response.text}")
+                print(f"LlamaParse Upload Failed: {response.text}")
                 return ""
 
             job_id = response.json().get("id")
             if not job_id: return ""
 
             print(f"DEBUG: LlamaParse job started (ID: {job_id}). Polling...")
-            for i in range(90):  # 3-minute timeout
+            for i in range(90):
                 await asyncio.sleep(2)
                 status_resp = await client.get(f"{base_url}/parsing/job/{job_id}", headers=headers)
                 if status_resp.status_code != 200: continue
